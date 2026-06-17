@@ -17,7 +17,10 @@ use gtk4::Application;
 const APP_ID: &str = "org.qbrsh.browser";
 
 fn main() {
+    // Parse one optional URL argument ourselves, then start GTK with no args so
+    // it routes to `activate` (not `open`) and ignores our argv.
+    let url = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
     let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(app::run);
-    app.run();
+    app.connect_activate(move |a| app::run(a, url.clone()));
+    app.run_with_args::<&str>(&[]);
 }

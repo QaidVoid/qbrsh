@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use gtk4::Application;
 use gtk4::prelude::*;
 
+use crate::core::command::{Command, OpenTarget};
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
@@ -268,8 +269,9 @@ fn data_dir() -> PathBuf {
     dir
 }
 
-/// Build the window, seed the first tab, and start the dispatch loop.
-pub fn run(app: &Application) {
+/// Build the window, seed the first tab, and start the dispatch loop. Opens
+/// `initial_url` if given, otherwise the configured homepage.
+pub fn run(app: &Application, initial_url: Option<String>) {
     let (mailbox, rx) = Mailbox::channel();
     let ui = Ui::build(app);
     let dir = data_dir();
@@ -288,7 +290,7 @@ pub fn run(app: &Application) {
         .map(|(url, title)| Bookmark { url, title })
         .collect();
 
-    let home = state.config.homepage.clone();
+    let home = initial_url.unwrap_or_else(|| state.config.homepage.clone());
     let id = state.tabs.open(&home);
     state.tabs.focus_last();
 
@@ -296,8 +298,13 @@ pub fn run(app: &Application) {
     let view = engine.create_view(id, mailbox.clone());
     ui.stack.add_child(&view.widget());
     ui.stack.set_visible_child(&view.widget());
-    view.load_uri(&home);
     views.insert(id, view);
+    // Load the initial page through the normalizing Open path (so a bare host
+    // like `github.com` gets a scheme).
+    mailbox.send(Msg::Command(Command::Open {
+        target: OpenTarget::Current,
+        input: home,
+    }));
 
     let history = History::open(&dir.join("history.db"), mailbox.clone());
     let plugins = PluginRuntime::new(dir.join("plugins"), mailbox.clone());
