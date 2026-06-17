@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::core::bindings::default_bindings;
 use crate::core::command::HintTarget;
+use crate::core::completion::CompletionState;
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, RequestId};
 use crate::core::trie::BindingTrie;
@@ -310,6 +311,7 @@ pub struct State {
     pub command_line: CommandLine,
     pub status: StatusLine,
     pub hints: HintState,
+    pub completion: CompletionState,
     pub config: Config,
     /// Normal-mode key bindings.
     pub bindings: BindingTrie,

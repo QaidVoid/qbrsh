@@ -79,6 +79,27 @@ impl GtkEffectRunner {
         }
     }
 
+    fn render_completion(&self, state: &State) {
+        while let Some(child) = self.ui.completion.first_child() {
+            self.ui.completion.remove(&child);
+        }
+        let show = state.mode.current == Mode::Command && !state.completion.items.is_empty();
+        self.ui.completion.set_visible(show);
+        if !show {
+            return;
+        }
+        for (i, item) in state.completion.items.iter().enumerate() {
+            let marker = if Some(i) == state.completion.selected {
+                "▸ "
+            } else {
+                "  "
+            };
+            let label = gtk4::Label::new(Some(&format!("{marker}{}", item.display)));
+            label.set_xalign(0.0);
+            self.ui.completion.append(&label);
+        }
+    }
+
     fn render_tabs(&self, state: &State) {
         let n = state.tabs.len();
         let idx = state.tabs.active_index() + 1;
@@ -171,6 +192,7 @@ impl EffectRunner for GtkEffectRunner {
             }
             Effect::RenderStatus => self.render_status(state),
             Effect::RenderTabs => self.render_tabs(state),
+            Effect::RenderCompletion => self.render_completion(state),
             Effect::ShowMessage { text, .. } => {
                 self.ui.statusbar.set_text(&text);
             }

@@ -207,3 +207,31 @@ fn parse_mode(arg: Option<&&str>) -> Result<Mode, String> {
         other => Err(format!("unknown mode: {other:?}")),
     }
 }
+
+/// Catalog of command names and one-line descriptions, used for completion.
+/// New commands are added here as they become available.
+pub const COMMAND_CATALOG: &[(&str, &str)] = &[
+    ("open", "Open a URL or search in the current tab"),
+    ("tabopen", "Open a URL or search in a new tab"),
+    ("back", "Go back in history"),
+    ("forward", "Go forward in history"),
+    ("reload", "Reload the page"),
+    ("stop", "Stop loading"),
+    ("scroll", "Scroll in a direction"),
+    ("scroll-page", "Scroll by a page"),
+    ("scroll-to-perc", "Scroll to a percentage of the page"),
+    ("hint", "Follow a link by keyboard"),
+    ("hint-tab", "Open a hinted link in a new tab"),
+    ("tab-close", "Close the current tab"),
+    ("tab-next", "Focus the next tab"),
+    ("tab-prev", "Focus the previous tab"),
+    ("tab-focus", "Focus a tab by index"),
+    ("tab-clone", "Duplicate the current tab"),
+    ("tab-move", "Move the current tab"),
+    ("tab-only", "Close all other tabs"),
+    ("undo", "Reopen the last closed tab"),
+    ("mode-enter", "Enter an input mode"),
+    ("mode-leave", "Return to normal mode"),
+    ("yank", "Copy the page URL or title"),
+    ("quit", "Quit the browser"),
+];

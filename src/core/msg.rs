@@ -60,6 +60,10 @@ pub enum Msg {
     },
     /// The command-line input text was edited by the user.
     CommandLineChanged(String),
+    /// Select the next completion candidate.
+    CompletionNext,
+    /// Select the previous completion candidate.
+    CompletionPrev,
     /// An input element gained or lost focus in a tab (insert-mode auto switch).
     InputFocusChanged { tab: TabId, focused: bool },
     /// A tab's web content process terminated unexpectedly.

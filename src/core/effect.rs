@@ -57,6 +57,8 @@ pub enum Effect {
     RenderStatus,
     /// Re-render the tab bar from current state.
     RenderTabs,
+    /// Re-render the completion popup from current state.
+    RenderCompletion,
     /// Display a transient message to the user.
     ShowMessage { level: MessageLevel, text: String },
     /// Tear down the application.

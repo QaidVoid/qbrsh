@@ -10,6 +10,7 @@ pub struct Ui {
     pub stack: Stack,
     pub tabbar: Label,
     pub statusbar: Label,
+    pub completion: GtkBox,
     pub commandline: Entry,
 }
 
@@ -35,11 +36,15 @@ impl Ui {
         let statusbar = Label::new(None);
         statusbar.set_xalign(0.0);
 
+        let completion = GtkBox::new(Orientation::Vertical, 0);
+        completion.set_visible(false);
+
         let commandline = Entry::new();
         commandline.set_visible(false);
 
         vbox.append(&tabbar);
         vbox.append(&stack);
+        vbox.append(&completion);
         vbox.append(&statusbar);
         vbox.append(&commandline);
         window.set_child(Some(&vbox));
@@ -49,6 +54,7 @@ impl Ui {
             stack,
             tabbar,
             statusbar,
+            completion,
             commandline,
         }
     }

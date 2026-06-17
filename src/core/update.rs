@@ -6,6 +6,7 @@
 //! messages (see [`Msg::JsResult`]).
 
 use crate::core::command::{Command, HintTarget, OpenTarget, ScrollDir, YankWhat};
+use crate::core::completion::complete;
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
@@ -137,8 +138,31 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
 
         Msg::CommandLineChanged(text) => {
             state.command_line.text = text;
-            Vec::new()
+            // Ignore the echo of a selection we applied ourselves.
+            if state.completion.suppress {
+                state.completion.suppress = false;
+                return Vec::new();
+            }
+            state.completion.items = complete(&state.command_line.text);
+            state.completion.selected = None;
+            vec![Effect::RenderCompletion]
         }
+        Msg::CompletionNext => match state.completion.next() {
+            Some(command_line) => {
+                state.command_line.text = command_line;
+                state.completion.suppress = true;
+                vec![Effect::RenderStatus, Effect::RenderCompletion]
+            }
+            None => Vec::new(),
+        },
+        Msg::CompletionPrev => match state.completion.prev() {
+            Some(command_line) => {
+                state.command_line.text = command_line;
+                state.completion.suppress = true;
+                vec![Effect::RenderStatus, Effect::RenderCompletion]
+            }
+            None => Vec::new(),
+        },
 
         Msg::InputFocusChanged { tab, focused } => {
             // Auto-switch insert mode only for the active tab and only in/out of
@@ -466,7 +490,8 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.mode.leave();
             state.command_line.active = false;
             state.command_line.text.clear();
-            let mut effects = vec![Effect::RenderStatus];
+            state.completion.reset();
+            let mut effects = vec![Effect::RenderStatus, Effect::RenderCompletion];
             if was_hint {
                 state.hints.reset();
                 effects.extend(fire_js(state, "window.__qbrshHints.clear()".to_string()));
@@ -478,13 +503,16 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.mode.enter(Mode::Command);
             state.command_line.active = true;
             state.command_line.text = text;
-            vec![Effect::RenderStatus]
+            state.completion.items = complete(&state.command_line.text);
+            state.completion.selected = None;
+            vec![Effect::RenderStatus, Effect::RenderCompletion]
         }
         Command::Accept => {
             let text = std::mem::take(&mut state.command_line.text);
             state.command_line.active = false;
+            state.completion.reset();
             state.mode.leave();
-            let mut effects = vec![Effect::RenderStatus];
+            let mut effects = vec![Effect::RenderStatus, Effect::RenderCompletion];
             let trimmed = text.trim();
             if trimmed.is_empty() {
                 return effects;

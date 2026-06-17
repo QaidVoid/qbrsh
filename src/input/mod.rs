@@ -44,8 +44,18 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
             return glib::Propagation::Stop;
         }
         match mode.get() {
-            // The command entry handles its own typing and Enter.
-            Mode::Command => glib::Propagation::Proceed,
+            // The command entry handles typing and Enter; Tab cycles completion.
+            Mode::Command => {
+                if key.sym == "Tab" && !key.ctrl && !key.alt {
+                    mb.send(if key.shift {
+                        Msg::CompletionPrev
+                    } else {
+                        Msg::CompletionNext
+                    });
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            }
             // Insert mode forwards keys to the page.
             Mode::Insert => glib::Propagation::Proceed,
             // Normal and Hint modes route every key through the core.
@@ -102,7 +112,7 @@ fn named_sym(keyval: gdk4::Key) -> Option<String> {
     let name = match keyval {
         gdk4::Key::Escape => "Escape",
         gdk4::Key::Return | gdk4::Key::KP_Enter => "Return",
-        gdk4::Key::Tab => "Tab",
+        gdk4::Key::Tab | gdk4::Key::ISO_Left_Tab => "Tab",
         gdk4::Key::space => "space",
         gdk4::Key::BackSpace => "BackSpace",
         gdk4::Key::Delete => "Delete",

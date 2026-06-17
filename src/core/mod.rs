@@ -15,6 +15,7 @@
 
 pub mod bindings;
 pub mod command;
+pub mod completion;
 pub mod effect;
 pub mod key;
 pub mod msg;
