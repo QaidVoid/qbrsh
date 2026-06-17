@@ -86,8 +86,9 @@ qbrsh does not run Firefox/Chrome extensions. Extensibility is native:
   `~/.local/share/qbrsh/adblock`, one domain per line).
 - **Plugins**: Rune scripts in `~/.local/share/qbrsh/plugins/*.rn`. See
   `examples/plugins/example.rn`. The `qbrsh` API: `command`, `open`, `message`,
-  `eval_js`, and `on(event, handler)` for cold-event hooks (`page_load`,
-  `tab_open`, `command`). Plugins are sandboxed and run under an instruction
-  budget. Reload with `:plugin-reload`.
+  `eval_js(s).await` (suspends the plugin and returns the page result), and
+  `on(event, handler)` for cold-event hooks (`page_load`, `tab_open`,
+  `command`). Plugins are sandboxed and run under an instruction budget. Reload
+  with `:plugin-reload`.
 - **Automation**: drive the browser from an external process over the IPC
   control interface (intended escape hatch for heavy/untrusted automation).

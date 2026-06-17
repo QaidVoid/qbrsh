@@ -262,7 +262,17 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             level: MessageLevel::Info,
             text,
         }],
-        Msg::PluginEval(script) => fire_js(state, script),
+        Msg::PluginEvalRequest { id, script } => match state.tabs.active_id() {
+            Some(tab) => vec![Effect::PluginEval { id, tab, script }],
+            // No active tab: resolve immediately so the plugin does not hang.
+            None => vec![Effect::ResolvePluginEval {
+                id,
+                result: String::new(),
+            }],
+        },
+        Msg::PluginEvalResult { id, result } => {
+            vec![Effect::ResolvePluginEval { id, result }]
+        }
 
         Msg::Crashed { tab } => {
             let mut effects = Vec::new();
@@ -1520,6 +1530,39 @@ mod tests {
             .filter(|e| matches!(e, Effect::OpenTab { .. }))
             .count();
         assert_eq!(opened, 2);
+    }
+
+    #[test]
+    fn plugin_eval_request_routes_to_active_tab() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        let effects = update(
+            &mut state,
+            Msg::PluginEvalRequest {
+                id: 7,
+                script: "document.title".to_string(),
+            },
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::PluginEval { id: 7, tab: t, .. } if *t == tab
+        )));
+    }
+
+    #[test]
+    fn plugin_eval_result_resolves() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::PluginEvalResult {
+                id: 7,
+                result: "hello".to_string(),
+            },
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ResolvePluginEval { id: 7, result } if result == "hello"
+        )));
     }
 
     #[test]

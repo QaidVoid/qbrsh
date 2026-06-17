@@ -80,6 +80,10 @@ pub enum Effect {
     FireHook { event: String, arg: String },
     /// Recompile and reload all plugins.
     ReloadPlugins,
+    /// Evaluate JavaScript for an awaiting plugin; result returns as `PluginEvalResult`.
+    PluginEval { id: u64, tab: TabId, script: String },
+    /// Deliver an awaited JS result back to the suspended plugin.
+    ResolvePluginEval { id: u64, result: String },
     /// Display a transient message to the user.
     ShowMessage { level: MessageLevel, text: String },
     /// Tear down the application.

@@ -2,11 +2,11 @@
 // `:plugin-reload` (or restart) to load it.
 //
 // The `qbrsh` API (fire-and-forget):
-//   qbrsh::command(s)   run a command string, e.g. "tabopen https://x"
-//   qbrsh::open(url)     open a URL in the current tab
-//   qbrsh::message(s)    show a status-bar message
-//   qbrsh::eval_js(s)    evaluate JavaScript in the active tab
-//   qbrsh::on(event, fn) register a cold-event hook by handler name
+//   qbrsh::command(s)        run a command string, e.g. "tabopen https://x"
+//   qbrsh::open(url)          open a URL in the current tab
+//   qbrsh::message(s)         show a status-bar message
+//   qbrsh::eval_js(s).await   evaluate JavaScript and await its result
+//   qbrsh::on(event, fn)      register a cold-event hook by handler name
 //
 // Cold events: "page_load" (arg: url), "tab_open" (arg: url),
 //              "command" (arg: command text).
@@ -16,9 +16,9 @@ pub fn main() {
     qbrsh::message("example plugin loaded");
 }
 
-pub fn on_page_load(url) {
-    // Greet on GitHub pages; harmless elsewhere.
-    if url.starts_with("https://github.com") {
-        qbrsh::message(`hello from GitHub: ${url}`);
-    }
+pub async fn on_page_load(url) {
+    // Read a value from the page and report it. eval_js suspends the plugin
+    // until the browser returns the result.
+    let title = qbrsh::eval_js("document.title").await;
+    qbrsh::message(`loaded "${title}" (${url})`);
 }

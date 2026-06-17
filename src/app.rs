@@ -246,6 +246,26 @@ impl EffectRunner for GtkEffectRunner {
                     self.plugins.count()
                 ));
             }
+            Effect::PluginEval { id, tab, script } => {
+                if let Some(v) = self.views.get(&tab) {
+                    let mb = mailbox.clone();
+                    v.evaluate_js(
+                        &script,
+                        Box::new(move |result| {
+                            mb.send(Msg::PluginEvalResult {
+                                id,
+                                result: result.unwrap_or_default(),
+                            });
+                        }),
+                    );
+                } else {
+                    mailbox.send(Msg::PluginEvalResult {
+                        id,
+                        result: String::new(),
+                    });
+                }
+            }
+            Effect::ResolvePluginEval { id, result } => self.plugins.resolve(id, result),
             Effect::RecordHistory { uri, title } => {
                 self.history.record(&uri, &title);
             }

@@ -81,6 +81,8 @@ pub enum Msg {
     SessionLoaded(Vec<String>),
     /// A plugin requested a status-bar message.
     PluginMessage(String),
-    /// A plugin requested JavaScript evaluation in the active tab.
-    PluginEval(String),
+    /// A plugin awaited a JavaScript evaluation in the active tab.
+    PluginEvalRequest { id: u64, script: String },
+    /// The result of a plugin's awaited JS evaluation, to resume the plugin.
+    PluginEvalResult { id: u64, result: String },
 }
