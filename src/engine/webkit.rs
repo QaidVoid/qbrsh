@@ -4,6 +4,7 @@
 //! wires their signals to [`Msg`] values on the mailbox, and exposes operations
 //! through [`EngineView`].
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -18,25 +19,34 @@ use crate::adblock;
 use crate::core::command::{Command, OpenTarget};
 use crate::core::msg::{LoadEvent, Msg};
 use crate::core::runtime::Mailbox;
-use crate::core::state::TabId;
+use crate::core::state::{PermissionPolicy, Permissions, TabId};
 
 use super::traits::EngineView;
+
+/// Shared, runtime-updatable permission policy read by the permission handler.
+pub type PermissionMirror = Rc<RefCell<Permissions>>;
 
 /// Factory that builds web views sharing one settings object and network session.
 pub struct WebKitEngine {
     settings: Settings,
     session: NetworkSession,
     blocklist: Rc<HashSet<String>>,
+    permissions: PermissionMirror,
 }
 
 impl WebKitEngine {
-    /// Create the engine with default settings and the given ad blocklist.
-    /// `debug` enables developer tools and console output to stdout.
-    pub fn new(debug: bool, blocklist: Rc<HashSet<String>>) -> Self {
+    /// Create the engine with default settings, the ad blocklist, and the
+    /// permission policy mirror. `debug` enables developer tools and console output.
+    pub fn new(
+        debug: bool,
+        blocklist: Rc<HashSet<String>>,
+        permissions: PermissionMirror,
+    ) -> Self {
         Self {
             settings: default_settings(debug),
             session: NetworkSession::default().expect("default network session"),
             blocklist,
+            permissions,
         }
     }
 
@@ -49,13 +59,25 @@ impl WebKitEngine {
         view.set_vexpand(true);
         view.set_hexpand(true);
 
-        connect_signals(&view, tab, mailbox, self.blocklist.clone());
+        connect_signals(
+            &view,
+            tab,
+            mailbox,
+            self.blocklist.clone(),
+            self.permissions.clone(),
+        );
         Box::new(WebKitView { view })
     }
 }
 
 /// Wire a view's WebKit signals to messages.
-fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox, blocklist: Rc<HashSet<String>>) {
+fn connect_signals(
+    view: &WebView,
+    tab: TabId,
+    mailbox: Mailbox,
+    blocklist: Rc<HashSet<String>>,
+    permissions: PermissionMirror,
+) {
     // Block navigations and subframe loads to ad/tracker domains. This runs
     // synchronously and natively, never through the message loop (design D5).
     view.connect_decide_policy(move |_v, decision, decision_type| {
@@ -117,11 +139,19 @@ fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox, blocklist: Rc<H
         mb.send(Msg::Crashed { tab });
     });
 
-    // Deny permission requests (geolocation, notifications, media) by default.
-    // Per-site allow lists are a future config addition. Script dialogs
-    // (alert/confirm/prompt) use WebKit's built-in handling.
-    view.connect_permission_request(|_v, request| {
-        request.deny();
+    // Resolve permission requests (geolocation, notifications, media) from the
+    // per-site policy, keyed by the view's current host. `ask` falls back to
+    // deny until a prompt mode exists. Script dialogs use WebKit's built-in
+    // handling.
+    view.connect_permission_request(move |v, request| {
+        let host = v
+            .uri()
+            .and_then(|u| adblock::host_of(&u).map(str::to_string))
+            .unwrap_or_default();
+        match permissions.borrow().policy_for(&host) {
+            PermissionPolicy::Allow => request.allow(),
+            PermissionPolicy::Ask | PermissionPolicy::Deny => request.deny(),
+        }
         true
     });
 

@@ -322,6 +322,49 @@ impl Default for Font {
     }
 }
 
+/// How a site permission request is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionPolicy {
+    /// Prompt the user (currently falls back to deny: there is no prompt mode).
+    Ask,
+    Allow,
+    #[default]
+    Deny,
+}
+
+impl PermissionPolicy {
+    /// Parse a policy from a `:set` value.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "ask" => Ok(Self::Ask),
+            "allow" => Ok(Self::Allow),
+            "deny" => Ok(Self::Deny),
+            other => Err(format!("invalid permission policy: {other}")),
+        }
+    }
+}
+
+/// Per-site permission policy: a default plus host-suffix-keyed overrides.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct Permissions {
+    pub default: PermissionPolicy,
+    pub sites: BTreeMap<String, PermissionPolicy>,
+}
+
+impl Permissions {
+    /// Resolve the policy for `host`, matching a site rule by exact host or
+    /// subdomain suffix, else the default.
+    pub fn policy_for(&self, host: &str) -> PermissionPolicy {
+        self.sites
+            .iter()
+            .find(|(site, _)| host == site.as_str() || host.ends_with(&format!(".{site}")))
+            .map(|(_, p)| *p)
+            .unwrap_or(self.default)
+    }
+}
+
 /// User configuration, deserialized from TOML and adjustable at runtime.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -329,6 +372,7 @@ pub struct Config {
     pub homepage: String,
     pub colors: Colors,
     pub font: Font,
+    pub permissions: Permissions,
 }
 
 impl Default for Config {
@@ -337,6 +381,7 @@ impl Default for Config {
             homepage: "https://duckduckgo.com".to_string(),
             colors: Colors::default(),
             font: Font::default(),
+            permissions: Permissions::default(),
         }
     }
 }
@@ -355,6 +400,13 @@ impl Config {
                 self.font.size = value
                     .parse()
                     .map_err(|_| format!("invalid font.size: {value}"))?
+            }
+            "permissions.default" => self.permissions.default = PermissionPolicy::parse(value)?,
+            key if key.starts_with("permissions.") => {
+                let host = &key["permissions.".len()..];
+                self.permissions
+                    .sites
+                    .insert(host.to_string(), PermissionPolicy::parse(value)?);
             }
             _ => return Err(format!("unknown setting: {key}")),
         }

@@ -243,6 +243,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             state.config = config;
             vec![
                 Effect::ApplyTheme,
+                Effect::SyncPermissions(state.config.permissions.clone()),
                 Effect::ShowMessage {
                     level: MessageLevel::Info,
                     text: "config reloaded".to_string(),
@@ -777,13 +778,20 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
         }
 
         Command::Set { key, value } => match state.config.set(&key, &value) {
-            Ok(()) => vec![
-                Effect::ApplyTheme,
-                Effect::ShowMessage {
-                    level: MessageLevel::Info,
-                    text: format!("{key} = {value}"),
-                },
-            ],
+            Ok(()) => {
+                let apply = if key.starts_with("permissions.") {
+                    Effect::SyncPermissions(state.config.permissions.clone())
+                } else {
+                    Effect::ApplyTheme
+                };
+                vec![
+                    apply,
+                    Effect::ShowMessage {
+                        level: MessageLevel::Info,
+                        text: format!("{key} = {value}"),
+                    },
+                ]
+            }
             Err(text) => vec![Effect::ShowMessage {
                 level: MessageLevel::Error,
                 text,

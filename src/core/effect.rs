@@ -6,7 +6,7 @@
 //! by asserting on the returned effects without any GTK or engine present.
 
 use crate::core::msg::{JsPurpose, RequestId};
-use crate::core::state::TabId;
+use crate::core::state::{Permissions, TabId};
 
 /// Severity of a user-facing message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +70,8 @@ pub enum Effect {
     RenderCompletion,
     /// Apply the current theme (colors, font) to the chrome.
     ApplyTheme,
+    /// Push the current per-site permission policy to the engine.
+    SyncPermissions(Permissions),
     /// Reload the configuration file from disk.
     ReloadConfig,
     /// Persist a named session's tab URLs.

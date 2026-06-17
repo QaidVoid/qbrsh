@@ -55,4 +55,29 @@ mod tests {
         assert!(c.set("font.size", "huge").is_err());
         assert!(c.set("nope.key", "x").is_err());
     }
+
+    #[test]
+    fn per_site_permission_lookup() {
+        use crate::core::state::PermissionPolicy;
+        let mut c = Config::default();
+        // Default policy is deny.
+        assert_eq!(
+            c.permissions.policy_for("example.com"),
+            PermissionPolicy::Deny
+        );
+        assert!(c.set("permissions.github.com", "allow").is_ok());
+        assert_eq!(
+            c.permissions.policy_for("github.com"),
+            PermissionPolicy::Allow
+        );
+        // Subdomains inherit the site rule by suffix.
+        assert_eq!(
+            c.permissions.policy_for("gist.github.com"),
+            PermissionPolicy::Allow
+        );
+        assert_eq!(c.permissions.policy_for("other.com"), PermissionPolicy::Deny);
+        assert!(c.set("permissions.default", "ask").is_ok());
+        assert_eq!(c.permissions.default, PermissionPolicy::Ask);
+        assert!(c.set("permissions.x", "bogus").is_err());
+    }
 }

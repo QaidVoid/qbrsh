@@ -17,7 +17,7 @@ use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
 use crate::config;
 use crate::core::state::{Bookmark, Mode, State, TabId};
 use crate::engine::traits::EngineView;
-use crate::engine::webkit::WebKitEngine;
+use crate::engine::webkit::{PermissionMirror, WebKitEngine};
 use crate::history::History;
 use crate::input;
 use crate::marks;
@@ -32,6 +32,7 @@ struct GtkEffectRunner {
     views: HashMap<TabId, Box<dyn EngineView>>,
     history: History,
     plugins: PluginRuntime,
+    permissions: PermissionMirror,
     css: gtk4::CssProvider,
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
@@ -227,6 +228,7 @@ impl EffectRunner for GtkEffectRunner {
                 self.history.query(query, prefix, generation);
             }
             Effect::ApplyTheme => self.apply_theme(state),
+            Effect::SyncPermissions(permissions) => *self.permissions.borrow_mut() = permissions,
             Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(config::load())),
             Effect::SaveSession { name, urls } => {
                 let _ = std::fs::create_dir_all(&self.sessions_dir);
@@ -295,13 +297,16 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let (mailbox, rx) = Mailbox::channel();
     let ui = Ui::build(app);
     let dir = data_dir();
+    let config = config::load();
     let blocklist = std::rc::Rc::new(crate::adblock::load(&dir.join("adblock")));
-    let engine = WebKitEngine::new(false, blocklist);
+    let permissions: PermissionMirror =
+        std::rc::Rc::new(std::cell::RefCell::new(config.permissions.clone()));
+    let engine = WebKitEngine::new(false, blocklist, permissions.clone());
 
     let quickmarks_path = dir.join("quickmarks");
     let bookmarks_path = dir.join("bookmarks");
 
-    let mut state = State::new(config::load());
+    let mut state = State::new(config);
     state.quickmarks = marks::load_quickmarks(&quickmarks_path)
         .into_iter()
         .collect();
@@ -345,6 +350,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         views,
         history,
         plugins,
+        permissions,
         css,
         quickmarks_path,
         bookmarks_path,
