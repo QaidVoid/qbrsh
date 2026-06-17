@@ -48,18 +48,26 @@ cargo run
 | `i` / `Esc` | insert / leave mode | `yy` / `yt` | yank url / title |
 | `m` / `b` | save / load quickmark | `M` / `gb` | bookmark / load |
 | `td` | toggle dark mode | `co` | close other tabs |
+| `/` / `?` | find forward / back | `n` / `N` | next / prev match |
+| `zi` / `zo` | zoom in / out | `zz` | reset zoom |
 
-Counts work (e.g. `5j`). In command mode, `Tab`/`Shift-Tab` move the highlight
-through the completion list (your typed text stays in the command line), `Space`
-applies the highlighted item so you can continue with an argument, and `Enter`
-runs the highlighted item (or the typed text if none is selected).
+Counts work (e.g. `5j`). Type `/text` (or `?text`) on the command line to search
+the page, then `n`/`N` to step through matches. In command mode, `Tab`/`Shift-Tab`
+move the highlight through the completion list (your typed text stays in the
+command line), `Space` applies the highlighted item so you can continue with an
+argument, and `Enter` runs the highlighted item (or the typed text if none is
+selected).
 
 ## Commands
 
 `:open`, `:tabopen`, `:back`, `:forward`, `:reload`, `:tab-close/next/prev/focus`,
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
-`:bookmark-add/load/del`, `:set`, `:config-source`, `:darkmode`,
-`:session-save/load`, `:plugin-reload`, `:permissions`, `:quit`.
+`:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
+`:set`, `:config-source`, `:darkmode`, `:session-save/load`, `:plugin-reload`,
+`:permissions`, `:quit`.
+
+Downloads are saved to your XDG downloads directory with a safe, non-colliding
+filename; start, completion, and failure are reported in the status bar.
 
 ## Configuration
 
@@ -76,6 +84,10 @@ accent = "#ffd76e"
 [font]
 family = "monospace"
 size = 11
+
+[zoom]
+# Default page zoom for new tabs (1.0 = 100%).
+default = 1.0
 
 [permissions]
 # Default policy for a capability with no rule: ask, allow, or deny.

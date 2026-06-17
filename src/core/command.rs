@@ -117,6 +117,18 @@ pub enum Command {
     PluginReload,
     /// Report current resident memory and live view count.
     Memory,
+    /// Move to the next in-page search match.
+    FindNext,
+    /// Move to the previous in-page search match.
+    FindPrev,
+    /// Increase the active tab's zoom.
+    ZoomIn,
+    /// Decrease the active tab's zoom.
+    ZoomOut,
+    /// Reset the active tab's zoom to the configured default.
+    ZoomReset,
+    /// Set the active tab's zoom to a percentage.
+    ZoomSet(u32),
     /// Open the per-site permission management view.
     Permissions,
     /// Quit the browser.
@@ -215,6 +227,16 @@ impl Command {
             "session-load" => Command::SessionLoad(arg),
             "plugin-reload" => Command::PluginReload,
             "memory" => Command::Memory,
+            "find-next" | "search-next" => Command::FindNext,
+            "find-prev" | "search-prev" => Command::FindPrev,
+            "zoom-in" => Command::ZoomIn,
+            "zoom-out" => Command::ZoomOut,
+            "zoom-reset" => Command::ZoomReset,
+            "zoom" => Command::ZoomSet(
+                rest.first()
+                    .and_then(|s| s.trim_end_matches('%').parse::<u32>().ok())
+                    .ok_or_else(|| format!("zoom needs a percentage: {arg}"))?,
+            ),
             "permissions" => Command::Permissions,
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
@@ -357,6 +379,12 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("session-load", "Restore a saved session"),
     ("plugin-reload", "Recompile and reload plugins"),
     ("memory", "Report memory use and view count"),
+    ("find-next", "Jump to the next search match"),
+    ("find-prev", "Jump to the previous search match"),
+    ("zoom-in", "Increase page zoom"),
+    ("zoom-out", "Decrease page zoom"),
+    ("zoom-reset", "Reset page zoom to the default"),
+    ("zoom", "Set page zoom to a percentage"),
     ("permissions", "Manage per-site permissions"),
     ("quit", "Quit the browser"),
 ];

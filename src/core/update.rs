@@ -10,7 +10,7 @@ use crate::core::completion::{CompletionItem, complete};
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
-use crate::core::state::{Bookmark, Mode, PermissionPolicy, PermissionPrompt, State};
+use crate::core::state::{Bookmark, Mode, PermissionPolicy, PermissionPrompt, Search, State};
 use crate::core::trie::TrieMatch;
 
 /// Apply a single message to the state and return the effects to perform.
@@ -306,6 +306,42 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                 state.mode.enter(Mode::Prompt);
             }
             vec![Effect::RenderStatus]
+        }
+
+        Msg::FindResult { tab, matches } => {
+            if state.tabs.active_id() != Some(tab) {
+                return Vec::new();
+            }
+            let text = match matches {
+                0 => "no matches".to_string(),
+                1 => "1 match".to_string(),
+                n => format!("{n} matches"),
+            };
+            vec![Effect::ShowMessage {
+                level: MessageLevel::Info,
+                text,
+            }]
+        }
+        Msg::DownloadStarted { id, filename } => {
+            state.downloads.insert(id, filename.clone());
+            vec![Effect::ShowMessage {
+                level: MessageLevel::Info,
+                text: format!("downloading {filename}"),
+            }]
+        }
+        Msg::DownloadFinished { id, path } => {
+            let name = state.downloads.remove(&id).unwrap_or(path);
+            vec![Effect::ShowMessage {
+                level: MessageLevel::Info,
+                text: format!("downloaded {name}"),
+            }]
+        }
+        Msg::DownloadFailed { id, error } => {
+            let name = state.downloads.remove(&id).unwrap_or_default();
+            vec![Effect::ShowMessage {
+                level: MessageLevel::Error,
+                text: format!("download failed {name}: {error}"),
+            }]
         }
 
         Msg::Crashed { tab } => {
@@ -824,10 +860,20 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                     arg: command.to_string(),
                 });
             } else if trimmed.starts_with('/') || trimmed.starts_with('?') {
-                effects.push(Effect::ShowMessage {
-                    level: MessageLevel::Info,
-                    text: "in-page search lands in a later milestone".to_string(),
-                });
+                let forward = trimmed.starts_with('/');
+                let text = trimmed[1..].trim().to_string();
+                if let Some(tab) = state.tabs.active_id() {
+                    if text.is_empty() {
+                        state.last_search = None;
+                        effects.push(Effect::FindClear { tab });
+                    } else {
+                        state.last_search = Some(Search {
+                            text: text.clone(),
+                            forward,
+                        });
+                        effects.push(Effect::Find { tab, text, forward });
+                    }
+                }
             } else {
                 push_parsed(state, trimmed, &mut effects);
             }
@@ -1005,6 +1051,22 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
 
         Command::Memory => vec![Effect::ReportMemory],
 
+        Command::FindNext => find_repeat(state, true),
+        Command::FindPrev => find_repeat(state, false),
+        Command::ZoomIn => {
+            let z = state.tabs.active().map(|t| t.zoom).unwrap_or(1.0);
+            set_zoom(state, z + ZOOM_STEP)
+        }
+        Command::ZoomOut => {
+            let z = state.tabs.active().map(|t| t.zoom).unwrap_or(1.0);
+            set_zoom(state, z - ZOOM_STEP)
+        }
+        Command::ZoomReset => {
+            let level = state.config.zoom.default;
+            set_zoom(state, level)
+        }
+        Command::ZoomSet(pct) => set_zoom(state, pct as f64 / 100.0),
+
         Command::Permissions => {
             state.perm_view.rows = state.config.permissions.rows();
             state.perm_view.selected = 0;
@@ -1020,6 +1082,46 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
     }
 }
 
+/// Zoom step and bounds.
+const ZOOM_STEP: f64 = 0.1;
+const ZOOM_MIN: f64 = 0.25;
+const ZOOM_MAX: f64 = 5.0;
+
+/// Set the active tab's zoom to `level` (clamped), updating state and the view.
+fn set_zoom(state: &mut State, level: f64) -> Vec<Effect> {
+    let level = level.clamp(ZOOM_MIN, ZOOM_MAX);
+    let Some(tab) = state.tabs.active_id() else {
+        return Vec::new();
+    };
+    if let Some(t) = state.tabs.get_mut(tab) {
+        t.zoom = level;
+    }
+    vec![
+        Effect::SetZoom { tab, level },
+        Effect::ShowMessage {
+            level: MessageLevel::Info,
+            text: format!("zoom {}%", (level * 100.0).round() as i64),
+        },
+    ]
+}
+
+/// Repeat the last in-page search, or hint that there is none.
+fn find_repeat(state: &State, forward: bool) -> Vec<Effect> {
+    if state.last_search.is_none() {
+        return vec![Effect::ShowMessage {
+            level: MessageLevel::Info,
+            text: "no active search".to_string(),
+        }];
+    }
+    with_active(state, |tab| {
+        vec![if forward {
+            Effect::FindNext { tab }
+        } else {
+            Effect::FindPrev { tab }
+        }]
+    })
+}
+
 /// Run `f` with the active tab id, or produce no effects if there is none.
 fn with_active(state: &State, f: impl FnOnce(crate::core::state::TabId) -> Vec<Effect>) -> Vec<Effect> {
     match state.tabs.active_id() {
@@ -1031,6 +1133,10 @@ fn with_active(state: &State, f: impl FnOnce(crate::core::state::TabId) -> Vec<E
 /// Open a new tab in state and emit the effect to realize its web view.
 fn open_tab(state: &mut State, uri: String, background: bool) -> Vec<Effect> {
     let id = state.tabs.open(&uri);
+    let default_zoom = state.config.zoom.default;
+    if let Some(t) = state.tabs.get_mut(id) {
+        t.zoom = default_zoom;
+    }
     let mut effects = vec![
         Effect::OpenTab {
             id,
@@ -1169,6 +1275,54 @@ mod tests {
                 capability: crate::core::state::Capability::Camera,
             },
         )
+    }
+
+    #[test]
+    fn slash_search_sets_last_search_and_emits_find() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::SetCommandLine("/hello".into())));
+        let effects = update(&mut state, Msg::Command(Command::Accept));
+        assert!(matches!(&state.last_search, Some(s) if s.text == "hello" && s.forward));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::Find { text, forward: true, .. } if text == "hello"
+        )));
+    }
+
+    #[test]
+    fn question_search_is_backward() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::SetCommandLine("?down".into())));
+        update(&mut state, Msg::Command(Command::Accept));
+        assert!(matches!(&state.last_search, Some(s) if s.text == "down" && !s.forward));
+    }
+
+    #[test]
+    fn find_repeat_requires_active_search() {
+        let mut state = state_with_tab();
+        let e = update(&mut state, Msg::Command(Command::FindNext));
+        assert!(!e.iter().any(|x| matches!(x, Effect::FindNext { .. })));
+        assert!(e.iter().any(|x| matches!(x, Effect::ShowMessage { .. })));
+
+        state.last_search = Some(Search { text: "x".into(), forward: true });
+        let e = update(&mut state, Msg::Command(Command::FindNext));
+        assert!(e.iter().any(|x| matches!(x, Effect::FindNext { .. })));
+        let e = update(&mut state, Msg::Command(Command::FindPrev));
+        assert!(e.iter().any(|x| matches!(x, Effect::FindPrev { .. })));
+    }
+
+    #[test]
+    fn zoom_in_reset_and_clamp() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::ZoomIn));
+        assert!((state.tabs.active().unwrap().zoom - 1.1).abs() < 1e-9);
+        update(&mut state, Msg::Command(Command::ZoomReset));
+        assert!((state.tabs.active().unwrap().zoom - 1.0).abs() < 1e-9);
+        // Out-of-range set is clamped to the bounds.
+        update(&mut state, Msg::Command(Command::ZoomSet(1000)));
+        assert!((state.tabs.active().unwrap().zoom - ZOOM_MAX).abs() < 1e-9);
+        update(&mut state, Msg::Command(Command::ZoomSet(1)));
+        assert!((state.tabs.active().unwrap().zoom - ZOOM_MIN).abs() < 1e-9);
     }
 
     #[test]

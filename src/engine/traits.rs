@@ -24,6 +24,21 @@ pub trait EngineView {
     /// Evaluate JavaScript; the result (or error) is delivered to `on_done`.
     fn evaluate_js(&self, script: &str, on_done: Box<dyn FnOnce(Result<String, String>)>);
 
+    /// Set the page zoom level (1.0 = 100%).
+    fn set_zoom(&self, level: f64);
+
+    /// Search the page for `text`, moving forward or backward to the first match.
+    fn find(&self, text: &str, forward: bool);
+
+    /// Move to the next match in the current search direction.
+    fn find_next(&self);
+
+    /// Move to the match in the opposite direction.
+    fn find_previous(&self);
+
+    /// Clear the current search highlight.
+    fn find_clear(&self);
+
     /// The widget to embed in the window's view stack.
     fn widget(&self) -> gtk4::Widget;
 }

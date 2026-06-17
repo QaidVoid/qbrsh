@@ -75,6 +75,8 @@ pub struct Tab {
     pub loading: bool,
     pub progress: f64,
     pub crashed: bool,
+    /// Page zoom level (1.0 = 100%).
+    pub zoom: f64,
 }
 
 impl Tab {
@@ -86,6 +88,7 @@ impl Tab {
             loading: false,
             progress: 0.0,
             crashed: false,
+            zoom: 1.0,
         }
     }
 }
@@ -140,6 +143,11 @@ impl Tabs {
     /// Mutable access to a tab by id.
     pub fn get_mut(&mut self, id: TabId) -> Option<&mut Tab> {
         self.tabs.iter_mut().find(|t| t.id == id)
+    }
+
+    /// Borrow the tab with the given id, if present.
+    pub fn get(&self, id: TabId) -> Option<&Tab> {
+        self.tabs.iter().find(|t| t.id == id)
     }
 
     /// Focus the last tab (used after opening a foreground tab).
@@ -323,6 +331,20 @@ impl Default for Font {
             family: "monospace".to_string(),
             size: 11,
         }
+    }
+}
+
+/// Page zoom configuration.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct Zoom {
+    /// Default zoom level applied to new tabs (1.0 = 100%).
+    pub default: f64,
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self { default: 1.0 }
     }
 }
 
@@ -535,6 +557,7 @@ pub struct Config {
     pub homepage: String,
     pub colors: Colors,
     pub font: Font,
+    pub zoom: Zoom,
     pub permissions: Permissions,
 }
 
@@ -544,6 +567,7 @@ impl Default for Config {
             homepage: "https://duckduckgo.com".to_string(),
             colors: Colors::default(),
             font: Font::default(),
+            zoom: Zoom::default(),
             permissions: Permissions::default(),
         }
     }
@@ -563,6 +587,11 @@ impl Config {
                 self.font.size = value
                     .parse()
                     .map_err(|_| format!("invalid font.size: {value}"))?
+            }
+            "zoom.default" => {
+                self.zoom.default = value
+                    .parse()
+                    .map_err(|_| format!("invalid zoom.default: {value}"))?
             }
             "permissions.default" => self.permissions.default = PermissionPolicy::parse(value)?,
             key if key.starts_with("permissions.") => {
@@ -610,8 +639,19 @@ pub struct State {
     pub prompts: VecDeque<PermissionPrompt>,
     /// State of the permission management list view.
     pub perm_view: PermissionViewState,
+    /// The last in-page search, for `n`/`N` repeat.
+    pub last_search: Option<Search>,
+    /// Active/recent downloads by id, for status reporting (id -> filename).
+    pub downloads: BTreeMap<u64, String>,
     /// Cleared to false to request shutdown.
     pub running: bool,
+}
+
+/// A remembered in-page search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Search {
+    pub text: String,
+    pub forward: bool,
 }
 
 impl State {

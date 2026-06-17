@@ -244,6 +244,31 @@ impl EffectRunner for GtkEffectRunner {
                     v.go_forward();
                 }
             }
+            Effect::SetZoom { tab, level } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.set_zoom(level);
+                }
+            }
+            Effect::Find { tab, text, forward } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.find(&text, forward);
+                }
+            }
+            Effect::FindNext { tab } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.find_next();
+                }
+            }
+            Effect::FindPrev { tab } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.find_previous();
+                }
+            }
+            Effect::FindClear { tab } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.find_clear();
+                }
+            }
             Effect::EvalJs {
                 id, tab, script, ..
             } => {
@@ -263,6 +288,9 @@ impl EffectRunner for GtkEffectRunner {
                 background,
             } => {
                 let view = self.engine.create_view(id, &uri, self.mailbox.clone());
+                if let Some(t) = state.tabs.get(id) {
+                    view.set_zoom(t.zoom);
+                }
                 self.ui.stack.add_child(&view.widget());
                 if !background {
                     self.ui.stack.set_visible_child(&view.widget());
@@ -406,11 +434,16 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let blocklist = std::rc::Rc::new(crate::adblock::load(&dir.join("adblock")));
     let permissions: PermissionMirror =
         std::rc::Rc::new(std::cell::RefCell::new(config.permissions.clone()));
+    let downloads_dir = directories::UserDirs::new()
+        .and_then(|u| u.download_dir().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| dir.join("downloads"));
     let engine = WebKitEngine::new(
         false,
         blocklist,
         permissions.clone(),
         &dir.join("content-filters"),
+        &downloads_dir,
+        mailbox.clone(),
     );
 
     let quickmarks_path = dir.join("quickmarks");
@@ -427,10 +460,15 @@ pub fn run(app: &Application, initial_url: Option<String>) {
 
     let home = initial_url.unwrap_or_else(|| state.config.homepage.clone());
     let id = state.tabs.open(&home);
+    let default_zoom = state.config.zoom.default;
+    if let Some(t) = state.tabs.get_mut(id) {
+        t.zoom = default_zoom;
+    }
     state.tabs.focus_last();
 
     let mut views: HashMap<TabId, Box<dyn EngineView>> = HashMap::new();
     let view = engine.create_view(id, &home, mailbox.clone());
+    view.set_zoom(default_zoom);
     ui.stack.add_child(&view.widget());
     ui.stack.set_visible_child(&view.widget());
     views.insert(id, view);

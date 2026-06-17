@@ -63,6 +63,15 @@ pub fn default_bindings() -> BindingTrie {
     bind("b", "cmd-set-text :quickmark-load ");
     bind("gb", "cmd-set-text :bookmark-load ");
 
+    // Find repeat
+    bind("n", "find-next");
+    bind("N", "find-prev");
+
+    // Zoom
+    bind("zi", "zoom-in");
+    bind("zo", "zoom-out");
+    bind("zz", "zoom-reset");
+
     // Content
     bind("td", "darkmode");
 

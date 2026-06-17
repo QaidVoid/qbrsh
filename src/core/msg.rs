@@ -94,4 +94,12 @@ pub enum Msg {
         host: String,
         capability: Capability,
     },
+    /// An in-page search reported its match count (0 means no matches).
+    FindResult { tab: TabId, matches: u32 },
+    /// A download started; `filename` is its chosen destination name.
+    DownloadStarted { id: u64, filename: String },
+    /// A download finished, saved at `path`.
+    DownloadFinished { id: u64, path: String },
+    /// A download failed.
+    DownloadFailed { id: u64, error: String },
 }

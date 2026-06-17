@@ -6,17 +6,17 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
-    CacheModel, GeolocationPermissionRequest, HardwareAccelerationPolicy, MemoryPressureSettings,
-    NavigationPolicyDecision, NetworkSession, NotificationPermissionRequest, PermissionRequest,
-    PolicyDecisionType, Settings, TLSErrorsPolicy, UserContentFilter, UserContentFilterStore,
-    UserContentInjectedFrames, UserMediaPermissionRequest, UserScript, UserScriptInjectionTime,
-    WebContext, WebView,
+    CacheModel, Download, FindOptions, GeolocationPermissionRequest, HardwareAccelerationPolicy,
+    MemoryPressureSettings, NavigationPolicyDecision, NetworkSession, NotificationPermissionRequest,
+    PermissionRequest, PolicyDecisionType, Settings, TLSErrorsPolicy, UserContentFilter,
+    UserContentFilterStore, UserContentInjectedFrames, UserMediaPermissionRequest, UserScript,
+    UserScriptInjectionTime, WebContext, WebView,
 };
 
 use crate::adblock;
@@ -72,6 +72,8 @@ impl WebKitEngine {
         blocklist: Rc<HashSet<String>>,
         permissions: PermissionMirror,
         filter_store_dir: &Path,
+        downloads_dir: &Path,
+        mailbox: Mailbox,
     ) -> Self {
         let _ = std::fs::create_dir_all(filter_store_dir);
         let store = UserContentFilterStore::new(&filter_store_dir.to_string_lossy());
@@ -119,6 +121,17 @@ impl WebKitEngine {
         // Pin the secure default so it cannot silently regress: certificate
         // errors block the load rather than being ignored.
         session.set_tls_errors_policy(TLSErrorsPolicy::Fail);
+
+        // Save downloads to the downloads directory with a safe, de-duplicated
+        // name, reporting lifecycle events as messages.
+        let dl_dir = downloads_dir.to_path_buf();
+        let dl_mailbox = mailbox.clone();
+        let dl_id = Rc::new(Cell::new(0u64));
+        session.connect_download_started(move |_session, download| {
+            let id = dl_id.get();
+            dl_id.set(id + 1);
+            wire_download(download, id, dl_dir.clone(), dl_mailbox.clone());
+        });
 
         Self {
             settings: default_settings(debug),
@@ -304,6 +317,18 @@ fn connect_signals(
         true
     });
 
+    // Report in-page search results (match count, or zero for no matches).
+    if let Some(fc) = view.find_controller() {
+        let mb = mailbox.clone();
+        fc.connect_found_text(move |_fc, count| {
+            mb.send(Msg::FindResult { tab, matches: count });
+        });
+        let mb = mailbox.clone();
+        fc.connect_failed_to_find_text(move |_fc| {
+            mb.send(Msg::FindResult { tab, matches: 0 });
+        });
+    }
+
     // Show a styled error page when a load fails (but not when we cancelled it,
     // e.g. a new-window request handed off to a tab).
     view.connect_load_failed(|v, _event, uri, error| {
@@ -355,6 +380,75 @@ fn connect_signals(
         };
         mb.send(Msg::InputFocusChanged { tab, focused });
     });
+}
+
+/// Wire a started download: choose a safe destination, then report start,
+/// completion, and failure as messages.
+fn wire_download(download: &Download, id: u64, dir: PathBuf, mailbox: Mailbox) {
+    let started = mailbox.clone();
+    download.connect_decide_destination(move |dl, suggested| {
+        let dest = safe_download_path(&dir, suggested);
+        let filename = dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("download")
+            .to_string();
+        dl.set_destination(&dest.to_string_lossy());
+        started.send(Msg::DownloadStarted { id, filename });
+        true
+    });
+    let finished = mailbox.clone();
+    download.connect_finished(move |dl| {
+        let path = dl.destination().map(|s| s.to_string()).unwrap_or_default();
+        finished.send(Msg::DownloadFinished { id, path });
+    });
+    download.connect_failed(move |_dl, error| {
+        mailbox.send(Msg::DownloadFailed {
+            id,
+            error: error.to_string(),
+        });
+    });
+}
+
+/// Compute a safe destination inside `dir` for `suggested`: a single sanitized
+/// path component that cannot escape `dir`, de-duplicated against existing files.
+fn safe_download_path(dir: &Path, suggested: &str) -> PathBuf {
+    let name = sanitize_download_name(suggested);
+    let mut candidate = dir.join(&name);
+    let stem = Path::new(&name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("download")
+        .to_string();
+    let ext = Path::new(&name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_string);
+    let mut n = 1;
+    while candidate.exists() && n < 10_000 {
+        let renamed = match &ext {
+            Some(e) => format!("{stem}-{n}.{e}"),
+            None => format!("{stem}-{n}"),
+        };
+        candidate = dir.join(renamed);
+        n += 1;
+    }
+    candidate
+}
+
+/// Reduce a suggested filename to a single safe component (no separators, no
+/// parent refs), falling back to `download`.
+fn sanitize_download_name(suggested: &str) -> String {
+    let base = Path::new(suggested)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .trim();
+    if base.is_empty() || base == "." || base == ".." {
+        "download".to_string()
+    } else {
+        base.to_string()
+    }
 }
 
 /// Map a WebKit permission request to a supported capability, or `None` for
@@ -484,7 +578,66 @@ impl EngineView for WebKitView {
         );
     }
 
+    fn set_zoom(&self, level: f64) {
+        self.view.set_zoom_level(level);
+    }
+
+    fn find(&self, text: &str, forward: bool) {
+        if let Some(fc) = self.view.find_controller() {
+            let mut opts = FindOptions::CASE_INSENSITIVE | FindOptions::WRAP_AROUND;
+            if !forward {
+                opts |= FindOptions::BACKWARDS;
+            }
+            fc.search(text, opts.bits(), u32::MAX);
+        }
+    }
+
+    fn find_next(&self) {
+        if let Some(fc) = self.view.find_controller() {
+            fc.search_next();
+        }
+    }
+
+    fn find_previous(&self) {
+        if let Some(fc) = self.view.find_controller() {
+            fc.search_previous();
+        }
+    }
+
+    fn find_clear(&self) {
+        if let Some(fc) = self.view.find_controller() {
+            fc.search_finish();
+        }
+    }
+
     fn widget(&self) -> gtk4::Widget {
         self.view.clone().upcast::<gtk4::Widget>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{safe_download_path, sanitize_download_name};
+
+    #[test]
+    fn sanitize_reduces_to_safe_component() {
+        assert_eq!(sanitize_download_name("a.txt"), "a.txt");
+        assert_eq!(sanitize_download_name("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_download_name("/abs/dir/file.bin"), "file.bin");
+        assert_eq!(sanitize_download_name(""), "download");
+        assert_eq!(sanitize_download_name(".."), "download");
+    }
+
+    #[test]
+    fn safe_path_dedups_collisions() {
+        let dir = std::env::temp_dir().join(format!("qbrsh-dl-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let first = safe_download_path(&dir, "x.txt");
+        assert_eq!(first.file_name().unwrap().to_str().unwrap(), "x.txt");
+        std::fs::write(&first, b"a").unwrap();
+        let second = safe_download_path(&dir, "x.txt");
+        assert_ne!(first, second);
+        assert_eq!(second.file_name().unwrap().to_str().unwrap(), "x-1.txt");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

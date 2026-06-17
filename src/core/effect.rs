@@ -76,6 +76,20 @@ pub enum Effect {
     SyncPermissions(Permissions),
     /// Resolve a deferred permission request (held by the engine) by `id`.
     ResolvePermission { id: u64, allow: bool },
+    /// Set a tab's page zoom level.
+    SetZoom { tab: TabId, level: f64 },
+    /// Search a tab's page for `text` in the given direction.
+    Find {
+        tab: TabId,
+        text: String,
+        forward: bool,
+    },
+    /// Move to the next in-page match in the search direction.
+    FindNext { tab: TabId },
+    /// Move to the previous in-page match (opposite direction).
+    FindPrev { tab: TabId },
+    /// Clear the in-page search highlight.
+    FindClear { tab: TabId },
     /// Persist the per-site permission rules to the data-dir store.
     SavePermissions(Permissions),
     /// Reload the configuration file from disk.
