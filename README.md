@@ -114,6 +114,16 @@ qbrsh does not run Firefox/Chrome extensions. Extensibility is native:
 
   Launching `qbrsh <url>` while an instance is running forwards the URL to it.
 
+## Resource use
+
+To keep memory bounded, tabs share a single WebKit web process instead of each
+spawning its own. One consequence is that a renderer crash can affect the tabs
+that share that process; each shows a recoverable error page and can be reloaded
+with `r`. The in-memory back/forward page cache is disabled, so navigating back
+or forward reloads the page (from the resource cache where possible) rather than
+restoring it instantly. Run `:memory` to see current resident memory and the
+number of live views.
+
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at

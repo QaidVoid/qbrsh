@@ -277,8 +277,27 @@ impl EffectRunner for GtkEffectRunner {
             Effect::ShowMessage { text, .. } => {
                 self.ui.statusbar.set_text(&text);
             }
+            Effect::ReportMemory => {
+                self.ui.statusbar.set_text(&memory_report(self.views.len()));
+            }
             Effect::Quit => self.app.quit(),
         }
+    }
+}
+
+/// Resident memory of this process in bytes, read from `/proc/self/statm`
+/// (Linux). The second field is resident pages; the page size is the usual 4 KiB.
+fn resident_memory_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
+}
+
+/// A one-line resource report: resident memory and the number of live views.
+fn memory_report(views: usize) -> String {
+    match resident_memory_bytes() {
+        Some(bytes) => format!("memory {} MB  views {views}", bytes / 1_048_576),
+        None => format!("memory unavailable  views {views}"),
     }
 }
 
@@ -365,6 +384,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     runner.apply_theme(&state);
     runner.render_status(&state);
     runner.render_tabs(&state);
+    eprintln!("[qbrsh] startup {}", memory_report(runner.views.len()));
 
     let mode_mirror = input::install(&ui, &mailbox);
     crate::ipc::serve(mailbox.clone());

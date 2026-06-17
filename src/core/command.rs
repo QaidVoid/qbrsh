@@ -115,6 +115,8 @@ pub enum Command {
     SessionLoad(String),
     /// Recompile and reload all plugins.
     PluginReload,
+    /// Report current resident memory and live view count.
+    Memory,
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -210,6 +212,7 @@ impl Command {
             "session-save" => Command::SessionSave(arg),
             "session-load" => Command::SessionLoad(arg),
             "plugin-reload" => Command::PluginReload,
+            "memory" => Command::Memory,
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -286,5 +289,6 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("session-save", "Save the current tabs as a session"),
     ("session-load", "Restore a saved session"),
     ("plugin-reload", "Recompile and reload plugins"),
+    ("memory", "Report memory use and view count"),
     ("quit", "Quit the browser"),
 ];

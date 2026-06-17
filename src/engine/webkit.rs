@@ -12,9 +12,9 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
-    HardwareAccelerationPolicy, NavigationPolicyDecision, NetworkSession, PolicyDecisionType,
-    Settings, UserContentFilter, UserContentFilterStore, UserContentInjectedFrames,
-    UserContentManager, UserScript, UserScriptInjectionTime, WebView,
+    CacheModel, HardwareAccelerationPolicy, MemoryPressureSettings, NavigationPolicyDecision,
+    NetworkSession, PolicyDecisionType, Settings, UserContentFilter, UserContentFilterStore,
+    UserContentInjectedFrames, UserScript, UserScriptInjectionTime, WebContext, WebView,
 };
 
 use crate::adblock;
@@ -31,6 +31,9 @@ pub type PermissionMirror = Rc<RefCell<Permissions>>;
 /// Factory that builds web views sharing one settings object and network session.
 pub struct WebKitEngine {
     settings: Settings,
+    /// Web context shared by all views; carries the cache model and web-process
+    /// memory-pressure settings. Views relate to a live sibling and inherit it.
+    context: WebContext,
     session: NetworkSession,
     blocklist: Rc<HashSet<String>>,
     permissions: PermissionMirror,
@@ -38,9 +41,10 @@ pub struct WebKitEngine {
     _filter_store: UserContentFilterStore,
     /// The compiled subresource content filter, once compilation finishes.
     filter: Rc<RefCell<Option<UserContentFilter>>>,
-    /// User content managers of created views, so the filter can be added once
-    /// it compiles (for views created before then).
-    ucms: Rc<RefCell<Vec<UserContentManager>>>,
+    /// Weak references to created views, used both to share a web process with a
+    /// live view and to apply the content filter once it compiles. Weak so closed
+    /// tabs drop out and the registry stays bounded.
+    views: Rc<RefCell<Vec<glib::object::WeakRef<WebView>>>>,
 }
 
 impl WebKitEngine {
@@ -57,20 +61,24 @@ impl WebKitEngine {
         let _ = std::fs::create_dir_all(filter_store_dir);
         let store = UserContentFilterStore::new(&filter_store_dir.to_string_lossy());
         let filter: Rc<RefCell<Option<UserContentFilter>>> = Rc::new(RefCell::new(None));
-        let ucms: Rc<RefCell<Vec<UserContentManager>>> = Rc::new(RefCell::new(Vec::new()));
+        let views: Rc<RefCell<Vec<glib::object::WeakRef<WebView>>>> =
+            Rc::new(RefCell::new(Vec::new()));
 
         let json = adblock::content_filter_json(&blocklist);
         let bytes = glib::Bytes::from(json.as_bytes());
         let filter_cb = filter.clone();
-        let ucms_cb = ucms.clone();
+        let views_cb = views.clone();
         store.save(
             "qbrsh-adblock",
             &bytes,
             None::<&gtk4::gio::Cancellable>,
             move |result| match result {
                 Ok(compiled) => {
-                    for ucm in ucms_cb.borrow().iter() {
-                        ucm.add_filter(&compiled);
+                    for view in views_cb.borrow().iter().filter_map(glib::object::WeakRef::upgrade)
+                    {
+                        if let Some(ucm) = view.user_content_manager() {
+                            ucm.add_filter(&compiled);
+                        }
                     }
                     *filter_cb.borrow_mut() = Some(compiled);
                 }
@@ -78,34 +86,60 @@ impl WebKitEngine {
             },
         );
 
+        // Bound renderer memory: a browser-appropriate but capped cache model on
+        // the shared context, plus memory-pressure handling on both the web and
+        // network processes so they release memory under load. The network
+        // process must be configured before its session is created.
+        let context = WebContext::builder()
+            .memory_pressure_settings(&MemoryPressureSettings::new())
+            .build();
+        context.set_cache_model(CacheModel::DocumentBrowser);
+
+        let mut net_pressure = MemoryPressureSettings::new();
+        NetworkSession::set_memory_pressure_settings(&mut net_pressure);
+
         Self {
             settings: default_settings(debug),
+            context,
             session: NetworkSession::default().expect("default network session"),
             blocklist,
             permissions,
             _filter_store: store,
             filter,
-            ucms,
+            views,
         }
     }
 
     /// Build a view for `tab`, wiring its signals to messages on `mailbox`.
     pub fn create_view(&self, tab: TabId, mailbox: Mailbox) -> Box<dyn EngineView> {
-        let view = WebView::builder()
+        // Prune dead references and pick a live view to share a web process with.
+        let related = {
+            let mut views = self.views.borrow_mut();
+            views.retain(|w| w.upgrade().is_some());
+            views.first().and_then(glib::object::WeakRef::upgrade)
+        };
+
+        let builder = WebView::builder()
             .settings(&self.settings)
-            .network_session(&self.session)
-            .build();
+            .network_session(&self.session);
+        // A related view shares its sibling's web process and context, so only
+        // the first (unrelated) view sets the context explicitly.
+        let builder = match related {
+            Some(ref r) => builder.related_view(r),
+            None => builder.web_context(&self.context),
+        };
+        let view = builder.build();
         view.set_vexpand(true);
         view.set_hexpand(true);
 
-        // Apply the subresource content filter (now if ready, else when it
-        // finishes compiling) and track this view's content manager.
-        if let Some(ucm) = view.user_content_manager() {
-            if let Some(compiled) = self.filter.borrow().as_ref() {
-                ucm.add_filter(compiled);
-            }
-            self.ucms.borrow_mut().push(ucm);
+        // Apply the subresource content filter now if it is ready; otherwise the
+        // compile callback applies it to every live view (this one included).
+        if let Some(ucm) = view.user_content_manager()
+            && let Some(compiled) = self.filter.borrow().as_ref()
+        {
+            ucm.add_filter(compiled);
         }
+        self.views.borrow_mut().push(view.downgrade());
 
         connect_signals(
             &view,
@@ -299,7 +333,9 @@ fn html_escape(s: &str) -> String {
 fn default_settings(debug: bool) -> Settings {
     let settings = Settings::new();
     settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Always);
-    settings.set_enable_page_cache(true);
+    // The in-memory back/forward page cache holds whole pages resident; disabling
+    // it trades slightly slower back/forward for a smaller footprint.
+    settings.set_enable_page_cache(false);
     settings.set_enable_smooth_scrolling(true);
     settings.set_enable_javascript(true);
     settings.set_enable_developer_extras(debug);

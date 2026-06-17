@@ -88,6 +88,8 @@ pub enum Effect {
     ResolvePluginEval { id: u64, result: String },
     /// Display a transient message to the user.
     ShowMessage { level: MessageLevel, text: String },
+    /// Report current resident memory and live view count to the status bar.
+    ReportMemory,
     /// Tear down the application.
     Quit,
 }

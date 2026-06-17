@@ -92,9 +92,13 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
 
         Msg::Progress { tab, fraction } => {
             let mut effects = Vec::new();
+            let active = state.tabs.active_id() == Some(tab);
             if let Some(t) = state.tabs.get_mut(tab) {
+                let was = progress_segment(t.progress);
                 t.progress = fraction;
-                if state.tabs.active_id() == Some(tab) {
+                // Re-render only when the displayed progress actually changes, so a
+                // burst of fine-grained ticks does not rebuild the status bar.
+                if active && progress_segment(fraction) != was {
                     effects.push(Effect::RenderStatus);
                 }
             }
@@ -863,6 +867,8 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             vec![Effect::LoadSession { name }]
         }
 
+        Command::Memory => vec![Effect::ReportMemory],
+
         Command::Quit => {
             state.running = false;
             vec![Effect::Quit]
@@ -904,37 +910,35 @@ fn open_tab(state: &mut State, uri: String, background: bool) -> Vec<Effect> {
     effects
 }
 
-/// Emit a fire-and-forget scroll plus a follow-up read of the scroll percentage,
-/// demonstrating the async result round-trip.
+/// Scroll the active page and read back the new position in a single evaluation:
+/// `script` performs the move and the trailing expression returns the percentage.
 fn scroll(state: &mut State, script: String) -> Vec<Effect> {
     let Some(tab) = state.tabs.active_id() else {
         return Vec::new();
     };
-    let scroll_id = state.alloc_request_id();
-    state.pending_js.insert(scroll_id, JsPurpose::FireAndForget);
+    let id = state.alloc_request_id();
+    state.pending_js.insert(id, JsPurpose::ReadScrollPercent);
 
-    let read_id = state.alloc_request_id();
-    state
-        .pending_js
-        .insert(read_id, JsPurpose::ReadScrollPercent);
-
-    vec![
-        Effect::EvalJs {
-            id: scroll_id,
-            tab,
-            script,
-            purpose: JsPurpose::FireAndForget,
-        },
-        Effect::EvalJs {
-            id: read_id,
-            tab,
-            script: SCROLL_PERCENT_SCRIPT.to_string(),
-            purpose: JsPurpose::ReadScrollPercent,
-        },
-    ]
+    vec![Effect::EvalJs {
+        id,
+        tab,
+        script: format!("{script} {SCROLL_PERCENT_SCRIPT}"),
+        purpose: JsPurpose::ReadScrollPercent,
+    }]
 }
 
 const SCROLL_PERCENT_SCRIPT: &str = "(function(){var e=document.documentElement;var m=e.scrollHeight-e.clientHeight;return m<=0?0:Math.round(e.scrollTop/m*100);})()";
+
+/// The integer progress percentage the status bar displays, or `None` when no
+/// progress is shown (idle or finished). Mirrors the status-bar render so the
+/// progress re-render guard matches exactly what is displayed.
+fn progress_segment(fraction: f64) -> Option<u32> {
+    if fraction > 0.0 && fraction < 1.0 {
+        Some((fraction * 100.0) as u32)
+    } else {
+        None
+    }
+}
 
 fn scroll_script(dir: ScrollDir, count: u32) -> String {
     const STEP: f64 = 60.0;
@@ -1013,7 +1017,7 @@ mod tests {
         let effects = press(&mut state, "j");
         assert!(effects.iter().any(|e| matches!(
             e,
-            Effect::EvalJs { script, .. } if script == "window.scrollBy(0, 60);"
+            Effect::EvalJs { script, .. } if script.starts_with("window.scrollBy(0, 60);")
         )));
         assert!(state.input.pending.is_empty());
     }
@@ -1026,7 +1030,7 @@ mod tests {
         let effects = press(&mut state, "j");
         assert!(effects.iter().any(|e| matches!(
             e,
-            Effect::EvalJs { script, .. } if script == "window.scrollBy(0, 300);"
+            Effect::EvalJs { script, .. } if script.starts_with("window.scrollBy(0, 300);")
         )));
         assert!(state.input.count.is_empty());
     }
@@ -1313,7 +1317,7 @@ mod tests {
         let tab = state.tabs.active_id().unwrap();
 
         let effects = update(&mut state, Msg::Command(Command::Scroll(ScrollDir::Down, 2)));
-        // Two evals: the scroll itself and the percent read.
+        // A single eval both scrolls and reads back the percentage.
         let read = effects
             .iter()
             .find_map(|e| match e {
