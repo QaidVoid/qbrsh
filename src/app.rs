@@ -367,6 +367,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     runner.render_tabs(&state);
 
     let mode_mirror = input::install(&ui, &mailbox);
+    crate::ipc::serve(mailbox.clone());
     ui.window.present();
 
     glib::MainContext::default().spawn_local(async move {

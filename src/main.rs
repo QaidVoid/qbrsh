@@ -7,6 +7,7 @@ mod core;
 mod engine;
 mod history;
 mod input;
+mod ipc;
 mod marks;
 mod plugin;
 mod ui;
@@ -20,6 +21,14 @@ fn main() {
     // Parse one optional URL argument ourselves, then start GTK with no args so
     // it routes to `activate` (not `open`) and ignores our argv.
     let url = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
+
+    // If a URL was given and another instance is running, hand it off and exit.
+    if let Some(ref u) = url
+        && ipc::forward_url(u)
+    {
+        return;
+    }
+
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(move |a| app::run(a, url.clone()));
     app.run_with_args::<&str>(&[]);
