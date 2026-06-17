@@ -101,7 +101,11 @@ qbrsh does not run Firefox/Chrome extensions. Extensibility is native:
   `examples/plugins/example.rn`. The `qbrsh` API: `command`, `open`, `message`,
   `eval_js(s).await` (suspends the plugin and returns the page result), and
   `on(event, handler)` for cold-event hooks (`page_load`, `tab_open`,
-  `command`). Plugins are sandboxed and run under an instruction budget. Reload
+  `command`). The Rune sandbox blocks ambient host access (no filesystem,
+  network, or process) and plugins run under an instruction budget. Note,
+  though, that **plugins are trusted code**: `eval_js` reads the active page's
+  DOM and `open`/`command` can navigate, which together suffice to exfiltrate
+  data. Run untrusted automation over the IPC interface, not as a plugin. Reload
   with `:plugin-reload`.
 - **Automation**: drive the browser from an external process over the IPC
   control interface, a JSON-RPC socket at `$XDG_RUNTIME_DIR/qbrsh/ipc.sock`.
@@ -116,13 +120,15 @@ qbrsh does not run Firefox/Chrome extensions. Extensibility is native:
 
 ## Resource use
 
-To keep memory bounded, tabs share a single WebKit web process instead of each
-spawning its own. One consequence is that a renderer crash can affect the tabs
-that share that process; each shows a recoverable error page and can be reloaded
-with `r`. The in-memory back/forward page cache is disabled, so navigating back
-or forward reloads the page (from the resource cache where possible) rather than
-restoring it instantly. Run `:memory` to see current resident memory and the
-number of live views.
+To balance memory against isolation, tabs of the same site share a WebKit web
+process, while different sites run in separate processes. A renderer crash
+therefore affects only the same-site tabs sharing that process; each shows a
+recoverable error page and can be reloaded with `r`. This uses more memory than
+forcing every tab into one process, which is the intended trade: one site cannot
+read another site's data. The in-memory back/forward page cache is disabled, so
+navigating back or forward reloads the page (from the resource cache where
+possible) rather than restoring it instantly. Run `:memory` to see current
+resident memory and the number of live views.
 
 ## License
 

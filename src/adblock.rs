@@ -72,6 +72,24 @@ pub fn host_of(uri: &str) -> Option<&str> {
     if host.is_empty() { None } else { Some(host) }
 }
 
+/// Best-effort site key (registrable domain) for grouping tabs into web
+/// processes: the host reduced to its last two labels, or the host itself for IP
+/// literals and single-label hosts. Without a public-suffix list this over-splits
+/// some multi-label TLDs, which is the safe direction (more isolation, not less).
+pub fn site_of(uri: &str) -> Option<String> {
+    let host = host_of(uri)?;
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Some(host.to_string());
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    let n = labels.len();
+    if n >= 2 {
+        Some(format!("{}.{}", labels[n - 2], labels[n - 1]))
+    } else {
+        Some(host.to_string())
+    }
+}
+
 /// Build a WebKit content-blocker rule list (JSON) from the blocklist, so the
 /// same domains are blocked at the subresource level (images, scripts, XHR),
 /// not only at navigation. Each rule blocks URLs whose host is, or is a
@@ -129,6 +147,15 @@ mod tests {
                 .unwrap()
                 .contains(r"doubleclick\.net")
         );
+    }
+
+    #[test]
+    fn site_key_is_registrable_domain() {
+        assert_eq!(site_of("https://www.example.com/x").as_deref(), Some("example.com"));
+        assert_eq!(site_of("https://example.com").as_deref(), Some("example.com"));
+        assert_eq!(site_of("https://a.b.example.com").as_deref(), Some("example.com"));
+        assert_eq!(site_of("http://127.0.0.1:8080/p").as_deref(), Some("127.0.0.1"));
+        assert_eq!(site_of("about:blank"), None);
     }
 
     #[test]

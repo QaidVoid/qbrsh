@@ -176,10 +176,13 @@ fn build_module(bridge: Arc<Bridge>, hooks: Hooks) -> Result<Module, rune::Conte
     let b = bridge.clone();
     module
         .function("open", move |url: String| {
-            b.mailbox.send(Msg::Command(Command::Open {
-                target: OpenTarget::Current,
-                input: url,
-            }));
+            // Restrict the plugin open API to safe web schemes (no file://, etc.).
+            if crate::core::command::is_safe_external_target(&url) {
+                b.mailbox.send(Msg::Command(Command::Open {
+                    target: OpenTarget::Current,
+                    input: url,
+                }));
+            }
         })
         .build()?;
 

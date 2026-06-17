@@ -12,9 +12,10 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
-    CacheModel, HardwareAccelerationPolicy, MemoryPressureSettings, NavigationPolicyDecision,
-    NetworkSession, PolicyDecisionType, Settings, UserContentFilter, UserContentFilterStore,
-    UserContentInjectedFrames, UserScript, UserScriptInjectionTime, WebContext, WebView,
+    CacheModel, GeolocationPermissionRequest, HardwareAccelerationPolicy, MemoryPressureSettings,
+    NavigationPolicyDecision, NetworkSession, NotificationPermissionRequest, PolicyDecisionType,
+    Settings, TLSErrorsPolicy, UserContentFilter, UserContentFilterStore, UserContentInjectedFrames,
+    UserScript, UserScriptInjectionTime, WebContext, WebView,
 };
 
 use crate::adblock;
@@ -27,6 +28,10 @@ use super::traits::EngineView;
 
 /// Shared, runtime-updatable permission policy read by the permission handler.
 pub type PermissionMirror = Rc<RefCell<Permissions>>;
+
+/// Registry of created views, each weakly held and tagged with its creation-time
+/// site key for same-site web-process grouping.
+type ViewRegistry = Rc<RefCell<Vec<(Option<String>, glib::object::WeakRef<WebView>)>>>;
 
 /// Factory that builds web views sharing one settings object and network session.
 pub struct WebKitEngine {
@@ -41,10 +46,11 @@ pub struct WebKitEngine {
     _filter_store: UserContentFilterStore,
     /// The compiled subresource content filter, once compilation finishes.
     filter: Rc<RefCell<Option<UserContentFilter>>>,
-    /// Weak references to created views, used both to share a web process with a
-    /// live view and to apply the content filter once it compiles. Weak so closed
+    /// Weak references to created views, each tagged with its creation-time site
+    /// key, used to relate a new view to a live same-site view (sharing a web
+    /// process) and to apply the content filter once it compiles. Weak so closed
     /// tabs drop out and the registry stays bounded.
-    views: Rc<RefCell<Vec<glib::object::WeakRef<WebView>>>>,
+    views: ViewRegistry,
 }
 
 impl WebKitEngine {
@@ -61,8 +67,7 @@ impl WebKitEngine {
         let _ = std::fs::create_dir_all(filter_store_dir);
         let store = UserContentFilterStore::new(&filter_store_dir.to_string_lossy());
         let filter: Rc<RefCell<Option<UserContentFilter>>> = Rc::new(RefCell::new(None));
-        let views: Rc<RefCell<Vec<glib::object::WeakRef<WebView>>>> =
-            Rc::new(RefCell::new(Vec::new()));
+        let views: ViewRegistry = Rc::new(RefCell::new(Vec::new()));
 
         let json = adblock::content_filter_json(&blocklist);
         let bytes = glib::Bytes::from(json.as_bytes());
@@ -74,7 +79,10 @@ impl WebKitEngine {
             None::<&gtk4::gio::Cancellable>,
             move |result| match result {
                 Ok(compiled) => {
-                    for view in views_cb.borrow().iter().filter_map(glib::object::WeakRef::upgrade)
+                    for view in views_cb
+                        .borrow()
+                        .iter()
+                        .filter_map(|(_, w)| w.upgrade())
                     {
                         if let Some(ucm) = view.user_content_manager() {
                             ucm.add_filter(&compiled);
@@ -98,10 +106,15 @@ impl WebKitEngine {
         let mut net_pressure = MemoryPressureSettings::new();
         NetworkSession::set_memory_pressure_settings(&mut net_pressure);
 
+        let session = NetworkSession::default().expect("default network session");
+        // Pin the secure default so it cannot silently regress: certificate
+        // errors block the load rather than being ignored.
+        session.set_tls_errors_policy(TLSErrorsPolicy::Fail);
+
         Self {
             settings: default_settings(debug),
             context,
-            session: NetworkSession::default().expect("default network session"),
+            session,
             blocklist,
             permissions,
             _filter_store: store,
@@ -110,20 +123,29 @@ impl WebKitEngine {
         }
     }
 
-    /// Build a view for `tab`, wiring its signals to messages on `mailbox`.
-    pub fn create_view(&self, tab: TabId, mailbox: Mailbox) -> Box<dyn EngineView> {
-        // Prune dead references and pick a live view to share a web process with.
+    /// Build a view for `tab` loading `uri`, wiring its signals to messages on
+    /// `mailbox`. The view shares a web process only with a live same-site view,
+    /// so different sites stay in separate renderer processes.
+    pub fn create_view(&self, tab: TabId, uri: &str, mailbox: Mailbox) -> Box<dyn EngineView> {
+        let site = adblock::site_of(uri);
+        // Prune dead references and relate only to a live view of the same site.
         let related = {
             let mut views = self.views.borrow_mut();
-            views.retain(|w| w.upgrade().is_some());
-            views.first().and_then(glib::object::WeakRef::upgrade)
+            views.retain(|(_, w)| w.upgrade().is_some());
+            site.as_deref().and_then(|s| {
+                views
+                    .iter()
+                    .find(|(vs, _)| vs.as_deref() == Some(s))
+                    .and_then(|(_, w)| w.upgrade())
+            })
         };
 
         let builder = WebView::builder()
             .settings(&self.settings)
             .network_session(&self.session);
-        // A related view shares its sibling's web process and context, so only
-        // the first (unrelated) view sets the context explicitly.
+        // A same-site related view shares its sibling's web process and context;
+        // an unrelated (new-site) view sets the shared context explicitly and
+        // gets its own process.
         let builder = match related {
             Some(ref r) => builder.related_view(r),
             None => builder.web_context(&self.context),
@@ -139,7 +161,7 @@ impl WebKitEngine {
         {
             ucm.add_filter(compiled);
         }
-        self.views.borrow_mut().push(view.downgrade());
+        self.views.borrow_mut().push((site, view.downgrade()));
 
         connect_signals(
             &view,
@@ -230,9 +252,18 @@ fn connect_signals(
             .uri()
             .and_then(|u| adblock::host_of(&u).map(str::to_string))
             .unwrap_or_default();
-        match permissions.borrow().policy_for(&host) {
-            PermissionPolicy::Allow => request.allow(),
-            PermissionPolicy::Ask | PermissionPolicy::Deny => request.deny(),
+        // Only geolocation and notifications follow the per-site policy. Every
+        // other (higher-risk) request type, including camera and microphone, is
+        // denied: a blanket site "allow" must not grant them, and there is no
+        // per-capability prompt yet.
+        let policy_governed =
+            request.is::<GeolocationPermissionRequest>() || request.is::<NotificationPermissionRequest>();
+        let allowed =
+            policy_governed && matches!(permissions.borrow().policy_for(&host), PermissionPolicy::Allow);
+        if allowed {
+            request.allow();
+        } else {
+            request.deny();
         }
         true
     });
@@ -322,11 +353,14 @@ h1{{color:#e06c75}}code{{background:#2a2a4a;padding:3px 8px;border-radius:4px;wo
     )
 }
 
-/// Escape the few characters that matter when embedding text in HTML.
+/// Escape the characters that matter when embedding text in HTML, including
+/// quotes, so interpolated values stay inert even if moved into an attribute.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Shared WebKit settings for all views.

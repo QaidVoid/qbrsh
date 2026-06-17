@@ -9,20 +9,26 @@
 //! Request shape: `{"method": "run_command"|"open_url", "params": {...}}`.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::thread;
 
-use crate::core::command::{Command, OpenTarget};
+use crate::core::command::{self, Command, OpenTarget};
 use crate::core::msg::Msg;
 use crate::core::runtime::Mailbox;
 
-/// The control socket path under `$XDG_RUNTIME_DIR/qbrsh/` (falling back to `/tmp`).
+/// The control socket path under the per-user runtime directory
+/// (`$XDG_RUNTIME_DIR/qbrsh/`), falling back to the user's own data directory.
+/// It never uses a world-accessible location such as `/tmp`.
 pub fn socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("qbrsh").join("ipc.sock")
+    let dirs = directories::ProjectDirs::from("", "", "qbrsh");
+    let base = dirs
+        .as_ref()
+        .and_then(|d| d.runtime_dir().map(std::path::Path::to_path_buf))
+        .or_else(|| dirs.as_ref().map(|d| d.data_local_dir().to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from(".qbrsh"));
+    base.join("ipc.sock")
 }
 
 /// Parse a JSON-RPC request line into a [`Command`]. Pure and testable.
@@ -59,13 +65,33 @@ pub fn parse_request(line: &str) -> Result<Command, String> {
 /// commands to `mailbox`. A stale socket (no live listener) is removed first.
 pub fn serve(mailbox: Mailbox) {
     let path = socket_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("[qbrsh] ipc: cannot create {}: {e}", dir.display());
+        return;
     }
-    // Remove a stale socket left by a crashed instance.
-    if path.exists() && UnixStream::connect(&path).is_err() {
-        let _ = std::fs::remove_file(&path);
+    // Owner-only directory so no other local user can reach the socket.
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    let dir_uid = std::fs::metadata(dir).map(|m| m.uid()).ok();
+
+    // Only touch an existing socket if it sits in our own directory and is owned
+    // by us; otherwise refuse rather than risk hijacking another user's path.
+    if path.exists() {
+        let owned = dir_uid.is_some() && std::fs::metadata(&path).map(|m| m.uid()).ok() == dir_uid;
+        if !owned {
+            eprintln!(
+                "[qbrsh] ipc: refusing socket not owned by current user: {}",
+                path.display()
+            );
+            return;
+        }
+        if UnixStream::connect(&path).is_err() {
+            let _ = std::fs::remove_file(&path);
+        }
     }
+
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
         Err(e) => {
@@ -73,6 +99,8 @@ pub fn serve(mailbox: Mailbox) {
             return;
         }
     };
+    // Owner-only socket.
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             handle_client(stream, &mailbox);
@@ -91,10 +119,11 @@ fn handle_client(stream: UnixStream, mailbox: &Mailbox) {
             continue;
         }
         let response = match parse_request(&line) {
-            Ok(cmd) => {
+            Ok(cmd) if command::is_remote_safe(&cmd) => {
                 mailbox.send(Msg::Command(cmd));
                 serde_json::json!({ "ok": true })
             }
+            Ok(_) => serde_json::json!({ "error": "command not permitted over ipc" }),
             Err(error) => serde_json::json!({ "error": error }),
         };
         let _ = writeln!(writer, "{response}");

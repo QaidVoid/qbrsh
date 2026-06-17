@@ -233,6 +233,70 @@ impl Command {
     }
 }
 
+/// Whether `input` from an untrusted source (a page hint, IPC, or a plugin) is
+/// safe to navigate to. Bare hosts and search terms are safe because they
+/// normalize to `https`; only an explicit non-web scheme (such as `file:`,
+/// `data:`, or `javascript:`) is rejected. `about:blank` is allowed.
+pub fn is_safe_external_target(input: &str) -> bool {
+    let t = input.trim();
+    if t.eq_ignore_ascii_case("about:blank") {
+        return true;
+    }
+    match scheme_of(t) {
+        Some(scheme) => matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https"),
+        None => true,
+    }
+}
+
+/// Whether a parsed command may be invoked by an untrusted remote (IPC) client.
+/// Restricts the remote surface to navigation, scrolling, and tab commands, and
+/// validates the target of any open. Sensitive commands (config mutation, quit,
+/// plugin reload, session/file writes) are not remotely invokable.
+pub fn is_remote_safe(cmd: &Command) -> bool {
+    match cmd {
+        Command::Open { input, .. } => is_safe_external_target(input),
+        Command::Back(_)
+        | Command::Forward(_)
+        | Command::Reload { .. }
+        | Command::Stop
+        | Command::Scroll(..)
+        | Command::ScrollPage { .. }
+        | Command::ScrollToPercent(_)
+        | Command::TabClose
+        | Command::TabNext(_)
+        | Command::TabPrev(_)
+        | Command::TabSelect(_)
+        | Command::TabClone
+        | Command::TabMove(_)
+        | Command::TabOnly
+        | Command::Undo => true,
+        _ => false,
+    }
+}
+
+/// Extract an explicit URL scheme if `input` clearly has one, distinguishing a
+/// scheme (`file:`, `http://`, `about:`) from a bare `host:port` by requiring the
+/// pre-colon token to be followed by `//` or to contain no dot.
+fn scheme_of(input: &str) -> Option<String> {
+    let colon = input.find(':')?;
+    let scheme = &input[..colon];
+    if scheme.is_empty() || !scheme.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !scheme
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    {
+        return None;
+    }
+    let after = &input[colon + 1..];
+    if after.starts_with("//") || !scheme.contains('.') {
+        Some(scheme.to_string())
+    } else {
+        None
+    }
+}
+
 fn parse_dir(arg: Option<&&str>) -> Result<ScrollDir, String> {
     match arg {
         Some(&"up") => Ok(ScrollDir::Up),
@@ -292,3 +356,47 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("memory", "Report memory use and view count"),
     ("quit", "Quit the browser"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_external_targets_allow_web_and_bare_hosts() {
+        assert!(is_safe_external_target("https://example.com"));
+        assert!(is_safe_external_target("http://example.com/p"));
+        assert!(is_safe_external_target("example.com"));
+        assert!(is_safe_external_target("example.com:8080/path"));
+        assert!(is_safe_external_target("search terms here"));
+        assert!(is_safe_external_target("about:blank"));
+    }
+
+    #[test]
+    fn safe_external_targets_reject_dangerous_schemes() {
+        assert!(!is_safe_external_target("file:///etc/passwd"));
+        assert!(!is_safe_external_target("file:///home/me/.ssh/id_rsa"));
+        assert!(!is_safe_external_target("data:text/html,<script>1</script>"));
+        assert!(!is_safe_external_target("javascript:alert(1)"));
+        assert!(!is_safe_external_target("about:config"));
+    }
+
+    #[test]
+    fn remote_safe_allows_navigation_not_sensitive_commands() {
+        assert!(is_remote_safe(&Command::Open {
+            target: OpenTarget::Tab,
+            input: "https://a.test".to_string(),
+        }));
+        assert!(is_remote_safe(&Command::TabNext(1)));
+        assert!(!is_remote_safe(&Command::Open {
+            target: OpenTarget::Tab,
+            input: "file:///etc/passwd".to_string(),
+        }));
+        assert!(!is_remote_safe(&Command::Quit));
+        assert!(!is_remote_safe(&Command::PluginReload));
+        assert!(!is_remote_safe(&Command::Set {
+            key: "x".to_string(),
+            value: "y".to_string(),
+        }));
+        assert!(!is_remote_safe(&Command::SessionSave("s".to_string())));
+    }
+}

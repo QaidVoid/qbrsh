@@ -41,6 +41,21 @@ struct GtkEffectRunner {
 }
 
 impl GtkEffectRunner {
+    /// Resolve a session file path, rejecting names that are not a single safe
+    /// path component so a session save or load cannot escape the sessions
+    /// directory.
+    fn session_path(&self, name: &str) -> Option<PathBuf> {
+        let name = name.trim();
+        if name.is_empty()
+            || name == ".."
+            || name == "."
+            || name.contains(['/', '\\'])
+        {
+            return None;
+        }
+        Some(self.sessions_dir.join(name))
+    }
+
     fn render_status(&self, state: &State) {
         let mode = match state.mode.current {
             Mode::Normal => "NORMAL",
@@ -193,7 +208,7 @@ impl EffectRunner for GtkEffectRunner {
                 uri,
                 background,
             } => {
-                let view = self.engine.create_view(id, self.mailbox.clone());
+                let view = self.engine.create_view(id, &uri, self.mailbox.clone());
                 self.ui.stack.add_child(&view.widget());
                 if !background {
                     self.ui.stack.set_visible_child(&view.widget());
@@ -231,11 +246,15 @@ impl EffectRunner for GtkEffectRunner {
             Effect::SyncPermissions(permissions) => *self.permissions.borrow_mut() = permissions,
             Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(config::load())),
             Effect::SaveSession { name, urls } => {
-                let _ = std::fs::create_dir_all(&self.sessions_dir);
-                let _ = std::fs::write(self.sessions_dir.join(&name), urls.join("\n"));
+                if let Some(path) = self.session_path(&name) {
+                    let _ = std::fs::create_dir_all(&self.sessions_dir);
+                    let _ = std::fs::write(path, urls.join("\n"));
+                }
             }
             Effect::LoadSession { name } => {
-                let urls = std::fs::read_to_string(self.sessions_dir.join(&name))
+                let urls = self
+                    .session_path(&name)
+                    .and_then(|p| std::fs::read_to_string(p).ok())
                     .map(|s| s.lines().map(str::to_string).collect::<Vec<_>>())
                     .unwrap_or_default();
                 mailbox.send(Msg::SessionLoaded(urls));
@@ -344,7 +363,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     state.tabs.focus_last();
 
     let mut views: HashMap<TabId, Box<dyn EngineView>> = HashMap::new();
-    let view = engine.create_view(id, mailbox.clone());
+    let view = engine.create_view(id, &home, mailbox.clone());
     ui.stack.add_child(&view.widget());
     ui.stack.set_visible_child(&view.widget());
     views.insert(id, view);

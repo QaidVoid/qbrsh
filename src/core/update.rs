@@ -146,6 +146,14 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                     if let Ok(href) = result
                         && !href.is_empty()
                     {
+                        // The href is page-controlled; only allow web schemes so a
+                        // hint cannot navigate to file:// or other local schemes.
+                        if !crate::core::command::is_safe_external_target(&href) {
+                            return vec![Effect::ShowMessage {
+                                level: MessageLevel::Error,
+                                text: format!("blocked unsafe link: {href}"),
+                            }];
+                        }
                         return handle_command(
                             state,
                             Command::Open {
@@ -391,7 +399,10 @@ fn handle_hint_key(state: &mut State, key: Key) -> Vec<Effect> {
 /// Dim the hints that no longer match the typed prefix.
 fn hint_filter_effects(state: &mut State) -> Vec<Effect> {
     let prefix = state.hints.input.clone();
-    let mut effects = fire_js(state, format!("window.__qbrshHints.filter('{prefix}')"));
+    let mut effects = fire_js(
+        state,
+        format!("window.__qbrshHints.filter({})", js_arg(&prefix)),
+    );
     effects.push(Effect::RenderStatus);
     effects
 }
@@ -403,7 +414,10 @@ fn follow_hint(state: &mut State, label: &str) -> Vec<Effect> {
     state.hints.reset();
     match target {
         HintTarget::Current => {
-            let mut effects = fire_js(state, format!("window.__qbrshHints.followClick('{label}')"));
+            let mut effects = fire_js(
+                state,
+                format!("window.__qbrshHints.followClick({})", js_arg(label)),
+            );
             effects.push(Effect::RenderStatus);
             effects
         }
@@ -417,7 +431,7 @@ fn follow_hint(state: &mut State, label: &str) -> Vec<Effect> {
                 Effect::EvalJs {
                     id,
                     tab,
-                    script: format!("window.__qbrshHints.getHref('{label}')"),
+                    script: format!("window.__qbrshHints.getHref({})", js_arg(label)),
                     purpose: JsPurpose::HintHref,
                 },
                 Effect::RenderStatus,
@@ -552,7 +566,7 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                 Effect::EvalJs {
                     id,
                     tab,
-                    script: format!("window.__qbrshHints.show('{HINT_CHARS}')"),
+                    script: format!("window.__qbrshHints.show({})", js_arg(HINT_CHARS)),
                     purpose: JsPurpose::HintsShown,
                 },
                 Effect::RenderStatus,
@@ -929,6 +943,12 @@ fn scroll(state: &mut State, script: String) -> Vec<Effect> {
 
 const SCROLL_PERCENT_SCRIPT: &str = "(function(){var e=document.documentElement;var m=e.scrollHeight-e.clientHeight;return m<=0?0:Math.round(e.scrollTop/m*100);})()";
 
+/// Encode a string as a JSON literal for safe embedding as a JavaScript argument,
+/// so labels and prefixes cannot break out of the call (no string interpolation).
+fn js_arg(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
 /// The integer progress percentage the status bar displays, or `None` when no
 /// progress is shown (idle or finished). Mirrors the status-bar render so the
 /// progress re-render guard matches exactly what is displayed.
@@ -1139,7 +1159,7 @@ mod tests {
         assert!(state.hints.labels.is_empty());
         assert!(effects.iter().any(|e| matches!(
             e,
-            Effect::EvalJs { script, .. } if script.contains("followClick('ba')")
+            Effect::EvalJs { script, .. } if script.contains("followClick(\"ba\")")
         )));
     }
 
@@ -1153,7 +1173,7 @@ mod tests {
         assert_eq!(state.hints.input, "a");
         assert!(effects.iter().any(|e| matches!(
             e,
-            Effect::EvalJs { script, .. } if script.contains("filter('a')")
+            Effect::EvalJs { script, .. } if script.contains("filter(\"a\")")
         )));
     }
 
