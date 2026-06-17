@@ -207,7 +207,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            homepage: "about:blank".to_string(),
+            homepage: "https://duckduckgo.com".to_string(),
         }
     }
 }
