@@ -4,13 +4,17 @@
 //! wires their signals to [`Msg`] values on the mailbox, and exposes operations
 //! through [`EngineView`].
 
+use std::collections::HashSet;
+use std::rc::Rc;
+
 use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
-    HardwareAccelerationPolicy, NetworkSession, Settings, UserContentInjectedFrames, UserScript,
-    UserScriptInjectionTime, WebView,
+    HardwareAccelerationPolicy, NavigationPolicyDecision, NetworkSession, PolicyDecisionType,
+    Settings, UserContentInjectedFrames, UserScript, UserScriptInjectionTime, WebView,
 };
 
+use crate::adblock;
 use crate::core::command::{Command, OpenTarget};
 use crate::core::msg::{LoadEvent, Msg};
 use crate::core::runtime::Mailbox;
@@ -22,15 +26,17 @@ use super::traits::EngineView;
 pub struct WebKitEngine {
     settings: Settings,
     session: NetworkSession,
+    blocklist: Rc<HashSet<String>>,
 }
 
 impl WebKitEngine {
-    /// Create the engine with default settings. `debug` enables developer tools
-    /// and console output to stdout.
-    pub fn new(debug: bool) -> Self {
+    /// Create the engine with default settings and the given ad blocklist.
+    /// `debug` enables developer tools and console output to stdout.
+    pub fn new(debug: bool, blocklist: Rc<HashSet<String>>) -> Self {
         Self {
             settings: default_settings(debug),
             session: NetworkSession::default().expect("default network session"),
+            blocklist,
         }
     }
 
@@ -43,13 +49,32 @@ impl WebKitEngine {
         view.set_vexpand(true);
         view.set_hexpand(true);
 
-        connect_signals(&view, tab, mailbox);
+        connect_signals(&view, tab, mailbox, self.blocklist.clone());
         Box::new(WebKitView { view })
     }
 }
 
 /// Wire a view's WebKit signals to messages.
-fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox) {
+fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox, blocklist: Rc<HashSet<String>>) {
+    // Block navigations and subframe loads to ad/tracker domains. This runs
+    // synchronously and natively, never through the message loop (design D5).
+    view.connect_decide_policy(move |_v, decision, decision_type| {
+        if matches!(
+            decision_type,
+            PolicyDecisionType::NavigationAction | PolicyDecisionType::NewWindowAction
+        ) && let Some(nav) = decision.downcast_ref::<NavigationPolicyDecision>()
+            && let Some(uri) = nav
+                .navigation_action()
+                .and_then(|a| a.request())
+                .and_then(|r| r.uri())
+            && adblock::is_blocked(&uri, &blocklist)
+        {
+            decision.ignore();
+            return true;
+        }
+        false
+    });
+
     let mb = mailbox.clone();
     view.connect_load_changed(move |_v, event| {
         let event = match event {

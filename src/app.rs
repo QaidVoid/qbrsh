@@ -262,9 +262,10 @@ fn data_dir() -> PathBuf {
 pub fn run(app: &Application) {
     let (mailbox, rx) = Mailbox::channel();
     let ui = Ui::build(app);
-    let engine = WebKitEngine::new(false);
-
     let dir = data_dir();
+    let blocklist = std::rc::Rc::new(crate::adblock::load(&dir.join("adblock")));
+    let engine = WebKitEngine::new(false, blocklist);
+
     let quickmarks_path = dir.join("quickmarks");
     let bookmarks_path = dir.join("bookmarks");
 
