@@ -39,6 +39,10 @@ pub fn default_bindings() -> BindingTrie {
         bind(&format!("<A-{i}>"), &format!("tab-focus {i}"));
     }
 
+    // Hints
+    bind("f", "hint");
+    bind("F", "hint-tab");
+
     // Open URL / command line
     bind("o", "cmd-set-text :open ");
     bind("O", "cmd-set-text :open {url}");

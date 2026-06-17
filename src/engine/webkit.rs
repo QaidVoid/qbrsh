@@ -126,6 +126,13 @@ fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox) {
         &[],
         &[],
     ));
+    ucm.add_script(&UserScript::new(
+        HINTS_JS,
+        UserContentInjectedFrames::TopFrame,
+        UserScriptInjectionTime::End,
+        &[],
+        &[],
+    ));
     ucm.register_script_message_handler("qbrshMode", None);
     let mb = mailbox.clone();
     ucm.connect_script_message_received(Some("qbrshMode"), move |_ucm, value| {
@@ -137,6 +144,9 @@ fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox) {
         mb.send(Msg::InputFocusChanged { tab, focused });
     });
 }
+
+/// Hint-mode engine injected into every page (defines `window.__qbrshHints`).
+const HINTS_JS: &str = include_str!("../../js/hints.js");
 
 /// Content script that reports focus on editable elements for auto-insert-mode.
 const INSERT_MODE_DETECT_JS: &str = r#"(function(){

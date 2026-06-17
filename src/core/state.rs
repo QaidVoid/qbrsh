@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use crate::core::bindings::default_bindings;
+use crate::core::command::HintTarget;
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, RequestId};
 use crate::core::trie::BindingTrie;
@@ -19,6 +20,7 @@ pub enum Mode {
     Normal,
     Insert,
     Command,
+    Hint,
 }
 
 /// Tracks the current mode and the one to return to on leave.
@@ -200,6 +202,28 @@ pub struct StatusLine {
     pub scroll_percent: Option<u8>,
 }
 
+/// Active hint-mode state: the follow action, the available labels, and the
+/// label characters typed so far.
+#[derive(Debug, Default)]
+pub struct HintState {
+    pub target: HintTarget,
+    pub labels: Vec<String>,
+    pub input: String,
+}
+
+impl HintState {
+    /// Labels that still match the typed prefix.
+    pub fn matching(&self) -> impl Iterator<Item = &String> {
+        self.labels.iter().filter(|l| l.starts_with(&self.input))
+    }
+
+    /// Reset to an empty, inactive hint state.
+    pub fn reset(&mut self) {
+        self.labels.clear();
+        self.input.clear();
+    }
+}
+
 /// User configuration. Grows as the config subsystem is ported.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -223,6 +247,7 @@ pub struct State {
     pub input: InputState,
     pub command_line: CommandLine,
     pub status: StatusLine,
+    pub hints: HintState,
     pub config: Config,
     /// Normal-mode key bindings.
     pub bindings: BindingTrie,

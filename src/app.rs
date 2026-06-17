@@ -35,6 +35,7 @@ impl GtkEffectRunner {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
+            Mode::Hint => "HINT",
         };
         let url = state.tabs.active().map(|t| t.url.clone()).unwrap_or_default();
         let prog = state.tabs.active().map(|t| t.progress).unwrap_or(0.0);
@@ -48,11 +49,15 @@ impl GtkEffectRunner {
             .scroll_percent
             .map(|p| format!("  {p}%"))
             .unwrap_or_default();
-        let pending = format!(
-            "{}{}",
-            state.input.count,
-            crate::core::key::display_sequence(&state.input.pending)
-        );
+        let pending = if state.mode.current == Mode::Hint {
+            state.hints.input.clone()
+        } else {
+            format!(
+                "{}{}",
+                state.input.count,
+                crate::core::key::display_sequence(&state.input.pending)
+            )
+        };
         let pending = if pending.is_empty() {
             String::new()
         } else {

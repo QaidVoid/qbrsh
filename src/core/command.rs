@@ -33,6 +33,16 @@ pub enum YankWhat {
     Title,
 }
 
+/// What following a hint does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HintTarget {
+    /// Click the element in the current tab.
+    #[default]
+    Current,
+    /// Open the element's link in a new tab.
+    Tab,
+}
+
 /// A browser action.
 ///
 /// This is the representative core set established by the TEA skeleton; the full
@@ -55,6 +65,8 @@ pub enum Command {
     ScrollPage { down: bool, half: bool },
     /// Scroll to a vertical percentage of the active page.
     ScrollToPercent(u8),
+    /// Enter hint mode with the given follow action.
+    Hint(HintTarget),
     /// Close the active tab.
     TabClose,
     /// Focus the next tab, wrapping, `count` times.
@@ -122,6 +134,8 @@ impl Command {
                 half: rest.contains(&"half"),
             },
             "scroll-to-perc" => Command::ScrollToPercent(count(100).min(100) as u8),
+            "hint" => Command::Hint(HintTarget::Current),
+            "hint-tab" => Command::Hint(HintTarget::Tab),
             "tab-close" | "d" => Command::TabClose,
             "tab-next" => Command::TabNext(count(1)),
             "tab-prev" => Command::TabPrev(count(1)),

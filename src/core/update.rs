@@ -5,7 +5,7 @@
 //! inline. Results of asynchronous effects re-enter through [`update`] as new
 //! messages (see [`Msg::JsResult`]).
 
-use crate::core::command::{Command, OpenTarget, ScrollDir, YankWhat};
+use crate::core::command::{Command, HintTarget, OpenTarget, ScrollDir, YankWhat};
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
@@ -15,7 +15,13 @@ use crate::core::trie::TrieMatch;
 /// Apply a single message to the state and return the effects to perform.
 pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     match msg {
-        Msg::Key(key) => handle_key(state, key),
+        Msg::Key(key) => {
+            if state.mode.current == Mode::Hint {
+                handle_hint_key(state, key)
+            } else {
+                handle_key(state, key)
+            }
+        }
         Msg::Command(cmd) => handle_command(state, cmd),
 
         Msg::Load { tab, event } => {
@@ -89,6 +95,40 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                     {
                         state.status.scroll_percent = Some(pct.clamp(0.0, 100.0) as u8);
                         return vec![Effect::RenderStatus];
+                    }
+                    Vec::new()
+                }
+                JsPurpose::HintsShown => {
+                    let labels: Vec<String> = result
+                        .unwrap_or_default()
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect();
+                    if labels.is_empty() {
+                        state.mode.leave();
+                        state.hints.reset();
+                        return vec![
+                            Effect::ShowMessage {
+                                level: MessageLevel::Info,
+                                text: "no hints on this page".to_string(),
+                            },
+                            Effect::RenderStatus,
+                        ];
+                    }
+                    state.hints.labels = labels;
+                    vec![Effect::RenderStatus]
+                }
+                JsPurpose::HintHref => {
+                    if let Ok(href) = result
+                        && !href.is_empty()
+                    {
+                        return handle_command(
+                            state,
+                            Command::Open {
+                                target: OpenTarget::Tab,
+                                input: href,
+                            },
+                        );
                     }
                     Vec::new()
                 }
@@ -179,6 +219,95 @@ fn handle_key(state: &mut State, key: Key) -> Vec<Effect> {
     }
 }
 
+/// Characters used to generate hint labels.
+const HINT_CHARS: &str = "asdfghjkl";
+
+/// Handle a key press while in hint mode: type into the label filter, follow a
+/// uniquely-matched hint, or remove a character.
+fn handle_hint_key(state: &mut State, key: Key) -> Vec<Effect> {
+    if key.sym == "BackSpace" {
+        state.hints.input.pop();
+        return hint_filter_effects(state);
+    }
+    if key.ctrl || key.alt || key.sym.chars().count() != 1 {
+        return Vec::new();
+    }
+
+    let candidate = format!("{}{}", state.hints.input, key.sym.to_lowercase());
+    let matches: Vec<String> = state
+        .hints
+        .labels
+        .iter()
+        .filter(|l| l.starts_with(&candidate))
+        .cloned()
+        .collect();
+
+    match matches.as_slice() {
+        // No label has this prefix: ignore the keystroke.
+        [] => Vec::new(),
+        [only] => {
+            let label = only.clone();
+            follow_hint(state, &label)
+        }
+        _ => {
+            state.hints.input = candidate;
+            hint_filter_effects(state)
+        }
+    }
+}
+
+/// Dim the hints that no longer match the typed prefix.
+fn hint_filter_effects(state: &mut State) -> Vec<Effect> {
+    let prefix = state.hints.input.clone();
+    let mut effects = fire_js(state, format!("window.__qbrshHints.filter('{prefix}')"));
+    effects.push(Effect::RenderStatus);
+    effects
+}
+
+/// Follow the element for `label` per the active hint target, then leave hint mode.
+fn follow_hint(state: &mut State, label: &str) -> Vec<Effect> {
+    let target = state.hints.target;
+    state.mode.leave();
+    state.hints.reset();
+    match target {
+        HintTarget::Current => {
+            let mut effects = fire_js(state, format!("window.__qbrshHints.followClick('{label}')"));
+            effects.push(Effect::RenderStatus);
+            effects
+        }
+        HintTarget::Tab => {
+            let Some(tab) = state.tabs.active_id() else {
+                return vec![Effect::RenderStatus];
+            };
+            let id = state.alloc_request_id();
+            state.pending_js.insert(id, JsPurpose::HintHref);
+            vec![
+                Effect::EvalJs {
+                    id,
+                    tab,
+                    script: format!("window.__qbrshHints.getHref('{label}')"),
+                    purpose: JsPurpose::HintHref,
+                },
+                Effect::RenderStatus,
+            ]
+        }
+    }
+}
+
+/// Build a fire-and-forget JS evaluation against the active tab.
+fn fire_js(state: &mut State, script: String) -> Vec<Effect> {
+    let Some(tab) = state.tabs.active_id() else {
+        return Vec::new();
+    };
+    let id = state.alloc_request_id();
+    vec![Effect::EvalJs {
+        id,
+        tab,
+        script,
+        purpose: JsPurpose::FireAndForget,
+    }]
+}
+
 /// Substitute command-line variables (`{url}`, `{title}`) from the active tab.
 fn substitute_vars(state: &State, text: &str) -> String {
     let (url, title) = state
@@ -229,6 +358,26 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                 pct.min(100)
             ),
         ),
+
+        Command::Hint(target) => {
+            let Some(tab) = state.tabs.active_id() else {
+                return Vec::new();
+            };
+            state.mode.enter(Mode::Hint);
+            state.hints.target = target;
+            state.hints.reset();
+            let id = state.alloc_request_id();
+            state.pending_js.insert(id, JsPurpose::HintsShown);
+            vec![
+                Effect::EvalJs {
+                    id,
+                    tab,
+                    script: format!("window.__qbrshHints.show('{HINT_CHARS}')"),
+                    purpose: JsPurpose::HintsShown,
+                },
+                Effect::RenderStatus,
+            ]
+        }
 
         Command::TabClose => match state.tabs.close_active() {
             Some((closed, next)) => {
@@ -283,10 +432,16 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             vec![Effect::RenderStatus]
         }
         Command::ModeLeave => {
+            let was_hint = state.mode.current == Mode::Hint;
             state.mode.leave();
             state.command_line.active = false;
             state.command_line.text.clear();
-            vec![Effect::RenderStatus]
+            let mut effects = vec![Effect::RenderStatus];
+            if was_hint {
+                state.hints.reset();
+                effects.extend(fire_js(state, "window.__qbrshHints.clear()".to_string()));
+            }
+            effects
         }
         Command::SetCommandLine(prefix) => {
             let text = substitute_vars(state, &prefix);
@@ -446,10 +601,19 @@ fn push_parsed(state: &mut State, command: &str, effects: &mut Vec<Effect>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::command::{Command, OpenTarget, ScrollDir};
+    use crate::core::command::{Command, HintTarget, OpenTarget, ScrollDir};
     use crate::core::key::Key;
-    use crate::core::msg::{LoadEvent, RequestId};
+    use crate::core::msg::{JsPurpose, LoadEvent, RequestId};
     use crate::core::state::{Config, Mode, State};
+
+    fn pending_id(state: &State, want: JsPurpose) -> RequestId {
+        *state
+            .pending_js
+            .iter()
+            .find(|(_, p)| **p == want)
+            .map(|(id, _)| id)
+            .expect("a pending JS request of the wanted purpose")
+    }
 
     fn state_with_tab() -> State {
         let mut state = State::new(Config::default());
@@ -530,6 +694,120 @@ mod tests {
         assert_eq!(state.mode.current, Mode::Insert);
         update(&mut state, Msg::InputFocusChanged { tab, focused: false });
         assert_eq!(state.mode.current, Mode::Normal);
+    }
+
+    #[test]
+    fn hint_key_enters_mode_and_requests_labels() {
+        let mut state = state_with_tab();
+        let effects = press(&mut state, "f");
+        assert_eq!(state.mode.current, Mode::Hint);
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::EvalJs {
+                purpose: JsPurpose::HintsShown,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn hints_shown_populates_labels() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        press(&mut state, "f");
+        let id = pending_id(&state, JsPurpose::HintsShown);
+        update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok("aa ab ba".to_string()),
+            },
+        );
+        assert_eq!(state.hints.labels, vec!["aa", "ab", "ba"]);
+    }
+
+    #[test]
+    fn empty_hints_leaves_hint_mode() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        press(&mut state, "f");
+        let id = pending_id(&state, JsPurpose::HintsShown);
+        update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok(String::new()),
+            },
+        );
+        assert_eq!(state.mode.current, Mode::Normal);
+    }
+
+    #[test]
+    fn unique_hint_prefix_follows_and_exits() {
+        let mut state = state_with_tab();
+        state.mode.enter(Mode::Hint);
+        state.hints.target = HintTarget::Current;
+        state.hints.labels = vec!["aa".into(), "ab".into(), "ba".into()];
+        let effects = update(&mut state, Msg::Key(Key::plain("b")));
+        assert_eq!(state.mode.current, Mode::Normal);
+        assert!(state.hints.labels.is_empty());
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::EvalJs { script, .. } if script.contains("followClick('ba')")
+        )));
+    }
+
+    #[test]
+    fn ambiguous_hint_prefix_filters() {
+        let mut state = state_with_tab();
+        state.mode.enter(Mode::Hint);
+        state.hints.labels = vec!["aa".into(), "ab".into(), "ba".into()];
+        let effects = update(&mut state, Msg::Key(Key::plain("a")));
+        assert_eq!(state.mode.current, Mode::Hint);
+        assert_eq!(state.hints.input, "a");
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::EvalJs { script, .. } if script.contains("filter('a')")
+        )));
+    }
+
+    #[test]
+    fn hint_tab_target_opens_href_result() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        state.mode.enter(Mode::Hint);
+        state.hints.target = HintTarget::Tab;
+        state.hints.labels = vec!["aa".into()];
+        update(&mut state, Msg::Key(Key::plain("a")));
+        let id = pending_id(&state, JsPurpose::HintHref);
+        let effects = update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok("https://x.test".to_string()),
+            },
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenTab { uri, .. } if uri == "https://x.test"
+        )));
+    }
+
+    #[test]
+    fn escape_clears_hints() {
+        let mut state = state_with_tab();
+        state.mode.enter(Mode::Hint);
+        state.hints.labels = vec!["aa".into()];
+        let effects = update(&mut state, Msg::Command(Command::ModeLeave));
+        assert_eq!(state.mode.current, Mode::Normal);
+        assert!(state.hints.labels.is_empty());
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::EvalJs { script, .. } if script.contains("clear()")
+        )));
     }
 
     #[test]

@@ -48,8 +48,8 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
             Mode::Command => glib::Propagation::Proceed,
             // Insert mode forwards keys to the page.
             Mode::Insert => glib::Propagation::Proceed,
-            // Normal mode routes every key through the binding trie.
-            Mode::Normal => {
+            // Normal and Hint modes route every key through the core.
+            Mode::Normal | Mode::Hint => {
                 mb.send(Msg::Key(key));
                 glib::Propagation::Stop
             }

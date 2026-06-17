@@ -31,6 +31,10 @@ pub enum JsPurpose {
     FireAndForget,
     /// Result is the vertical scroll percentage (0-100).
     ReadScrollPercent,
+    /// Result is the space-joined list of rendered hint labels.
+    HintsShown,
+    /// Result is the href of a followed hint, to open in a new tab.
+    HintHref,
 }
 
 /// A single unit of change entering the core.
