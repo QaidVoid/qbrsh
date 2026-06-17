@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install GTK and WebKit dev packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target "$TARGET" --bin qbrsh
+
+      - name: Package
+        run: |
+          cd "target/$TARGET/release"
+          tar cJf "../../../qbrsh-$TARGET.tar.xz" qbrsh
+          cd ../../..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qbrsh-x86_64-unknown-linux-gnu
+          path: qbrsh-x86_64-unknown-linux-gnu.tar.xz
+
+  changelog:
+    name: Generate changelog
+    runs-on: ubuntu-latest
+    outputs:
+      changelog: ${{ steps.cliff.outputs.content }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+
+  release:
+    name: Create Release
+    needs: [build, changelog]
+    # Publish as long as the changelog and at least one artifact exist; a single
+    # failed step should not block the release.
+    if: ${{ !cancelled() && needs.changelog.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qbrsh-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          shopt -s nullglob
+          files=(qbrsh-*.tar.xz)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No artifacts to release" >&2
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            qbrsh-*.tar.xz
+            SHA256SUMS
+          body: ${{ needs.changelog.outputs.changelog }}
