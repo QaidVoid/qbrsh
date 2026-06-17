@@ -4,8 +4,8 @@
 //! wires their signals to [`Msg`] values on the mailbox, and exposes operations
 //! through [`EngineView`].
 
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -13,16 +13,20 @@ use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
     CacheModel, GeolocationPermissionRequest, HardwareAccelerationPolicy, MemoryPressureSettings,
-    NavigationPolicyDecision, NetworkSession, NotificationPermissionRequest, PolicyDecisionType,
-    Settings, TLSErrorsPolicy, UserContentFilter, UserContentFilterStore, UserContentInjectedFrames,
-    UserScript, UserScriptInjectionTime, WebContext, WebView,
+    NavigationPolicyDecision, NetworkSession, NotificationPermissionRequest, PermissionRequest,
+    PolicyDecisionType, Settings, TLSErrorsPolicy, UserContentFilter, UserContentFilterStore,
+    UserContentInjectedFrames, UserMediaPermissionRequest, UserScript, UserScriptInjectionTime,
+    WebContext, WebView,
 };
 
 use crate::adblock;
 use crate::core::command::{Command, OpenTarget};
 use crate::core::msg::{LoadEvent, Msg};
 use crate::core::runtime::Mailbox;
-use crate::core::state::{PermissionPolicy, Permissions, TabId};
+use crate::core::state::{Capability, PermissionPolicy, Permissions, TabId};
+
+/// Deferred permission requests awaiting the user's decision, keyed by id.
+type PendingPermissions = Rc<RefCell<HashMap<u64, PermissionRequest>>>;
 
 use super::traits::EngineView;
 
@@ -51,6 +55,11 @@ pub struct WebKitEngine {
     /// process) and to apply the content filter once it compiles. Weak so closed
     /// tabs drop out and the registry stays bounded.
     views: ViewRegistry,
+    /// Permission requests deferred for an interactive prompt, resolved later by
+    /// id from the user's decision.
+    pending_permissions: PendingPermissions,
+    /// Allocates ids for deferred permission requests.
+    next_permission_id: Rc<Cell<u64>>,
 }
 
 impl WebKitEngine {
@@ -120,6 +129,20 @@ impl WebKitEngine {
             _filter_store: store,
             filter,
             views,
+            pending_permissions: Rc::new(RefCell::new(HashMap::new())),
+            next_permission_id: Rc::new(Cell::new(0)),
+        }
+    }
+
+    /// Resolve a deferred permission request by id from the user's decision.
+    /// A missing id (already resolved, or its tab closed) is a no-op.
+    pub fn resolve_permission(&self, id: u64, allow: bool) {
+        if let Some(request) = self.pending_permissions.borrow_mut().remove(&id) {
+            if allow {
+                request.allow();
+            } else {
+                request.deny();
+            }
         }
     }
 
@@ -169,6 +192,8 @@ impl WebKitEngine {
             mailbox,
             self.blocklist.clone(),
             self.permissions.clone(),
+            self.pending_permissions.clone(),
+            self.next_permission_id.clone(),
         );
         Box::new(WebKitView { view })
     }
@@ -181,6 +206,8 @@ fn connect_signals(
     mailbox: Mailbox,
     blocklist: Rc<HashSet<String>>,
     permissions: PermissionMirror,
+    pending_permissions: PendingPermissions,
+    next_permission_id: Rc<Cell<u64>>,
 ) {
     // Block navigations and subframe loads to ad/tracker domains. This runs
     // synchronously and natively, never through the message loop (design D5).
@@ -244,26 +271,35 @@ fn connect_signals(
     });
 
     // Resolve permission requests (geolocation, notifications, media) from the
-    // per-site policy, keyed by the view's current host. `ask` falls back to
-    // deny until a prompt mode exists. Script dialogs use WebKit's built-in
-    // handling.
+    // per-site, per-capability policy keyed by the view's current host. An `ask`
+    // policy defers the request to the interactive prompt (resolved later by id).
+    // Script dialogs use WebKit's built-in handling.
+    let mb = mailbox.clone();
     view.connect_permission_request(move |v, request| {
         let host = v
             .uri()
             .and_then(|u| adblock::host_of(&u).map(str::to_string))
             .unwrap_or_default();
-        // Only geolocation and notifications follow the per-site policy. Every
-        // other (higher-risk) request type, including camera and microphone, is
-        // denied: a blanket site "allow" must not grant them, and there is no
-        // per-capability prompt yet.
-        let policy_governed =
-            request.is::<GeolocationPermissionRequest>() || request.is::<NotificationPermissionRequest>();
-        let allowed =
-            policy_governed && matches!(permissions.borrow().policy_for(&host), PermissionPolicy::Allow);
-        if allowed {
-            request.allow();
-        } else {
+        // Classify into a supported capability; unsupported request types
+        // (clipboard, pointer-lock, device-info, ...) are denied.
+        let Some(capability) = classify_permission(request) else {
             request.deny();
+            return true;
+        };
+        match permissions.borrow().policy_for(&host, capability) {
+            PermissionPolicy::Allow => request.allow(),
+            PermissionPolicy::Deny => request.deny(),
+            // Defer: hold the request and ask the user, resolving later by id.
+            PermissionPolicy::Ask => {
+                let id = next_permission_id.get();
+                next_permission_id.set(id + 1);
+                pending_permissions.borrow_mut().insert(id, request.clone());
+                mb.send(Msg::PermissionRequested {
+                    id,
+                    host,
+                    capability,
+                });
+            }
         }
         true
     });
@@ -321,6 +357,27 @@ fn connect_signals(
     });
 }
 
+/// Map a WebKit permission request to a supported capability, or `None` for
+/// request types the browser does not surface (which are denied). A combined
+/// audio+video request is treated as the camera (the higher-risk capability).
+fn classify_permission(request: &PermissionRequest) -> Option<Capability> {
+    if request.is::<GeolocationPermissionRequest>() {
+        Some(Capability::Geolocation)
+    } else if request.is::<NotificationPermissionRequest>() {
+        Some(Capability::Notifications)
+    } else if let Some(media) = request.downcast_ref::<UserMediaPermissionRequest>() {
+        if media.is_for_video_device() {
+            Some(Capability::Camera)
+        } else if media.is_for_audio_device() {
+            Some(Capability::Microphone)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 /// Hint-mode engine injected into every page (defines `window.__qbrshHints`).
 const HINTS_JS: &str = include_str!("../../js/hints.js");
 
@@ -372,7 +429,12 @@ fn default_settings(debug: bool) -> Settings {
     settings.set_enable_page_cache(false);
     settings.set_enable_smooth_scrolling(true);
     settings.set_enable_javascript(true);
-    settings.set_enable_developer_extras(debug);
+    // Enable getUserMedia / WebRTC; without media-stream the engine rejects
+    // camera/mic requests before any permission request is emitted (no prompt).
+    settings.set_enable_media_stream(true);
+    settings.set_enable_webrtc(true);
+    // Web inspector (right-click -> Inspect Element) is always available.
+    settings.set_enable_developer_extras(true);
     settings.set_enable_write_console_messages_to_stdout(debug);
     settings
 }

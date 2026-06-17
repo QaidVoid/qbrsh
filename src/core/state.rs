@@ -6,7 +6,7 @@
 //! the skeleton establishes the ownership shape with the fields the core already
 //! exercises (mode, tabs, input, command line, status, config).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::core::bindings::default_bindings;
 use crate::core::command::HintTarget;
@@ -22,6 +22,10 @@ pub enum Mode {
     Insert,
     Command,
     Hint,
+    /// Answering an interactive permission prompt.
+    Prompt,
+    /// Browsing the permission management list.
+    Permissions,
 }
 
 /// Tracks the current mode and the one to return to on leave.
@@ -323,13 +327,13 @@ impl Default for Font {
 }
 
 /// How a site permission request is answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionPolicy {
-    /// Prompt the user (currently falls back to deny: there is no prompt mode).
+    /// Prompt the user with the interactive permission prompt.
+    #[default]
     Ask,
     Allow,
-    #[default]
     Deny,
 }
 
@@ -345,24 +349,183 @@ impl PermissionPolicy {
     }
 }
 
-/// Per-site permission policy: a default plus host-suffix-keyed overrides.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+/// A capability a page can request, decided independently per site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Capability {
+    Geolocation,
+    Notifications,
+    Camera,
+    Microphone,
+}
+
+impl Capability {
+    /// Every capability, in display order.
+    pub const ALL: [Capability; 4] = [
+        Capability::Geolocation,
+        Capability::Notifications,
+        Capability::Camera,
+        Capability::Microphone,
+    ];
+
+    /// The lowercase name used in config keys and display.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Capability::Geolocation => "geolocation",
+            Capability::Notifications => "notifications",
+            Capability::Camera => "camera",
+            Capability::Microphone => "microphone",
+        }
+    }
+
+    /// Parse a capability name from a config key.
+    pub fn parse(value: &str) -> Option<Self> {
+        Capability::ALL.into_iter().find(|c| c.as_str() == value)
+    }
+}
+
+/// A site's permission rules: either one policy for all capabilities (the
+/// backward-compatible bare form) or an explicit per-capability map.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum SiteRules {
+    /// One policy applied to every capability (legacy bare-string form).
+    All(PermissionPolicy),
+    /// An explicit policy per capability.
+    PerCapability(BTreeMap<Capability, PermissionPolicy>),
+}
+
+impl SiteRules {
+    /// The policy this site defines for `cap`, if any.
+    fn get(&self, cap: Capability) -> Option<PermissionPolicy> {
+        match self {
+            SiteRules::All(p) => Some(*p),
+            SiteRules::PerCapability(m) => m.get(&cap).copied(),
+        }
+    }
+
+    /// Set `cap` to `policy`, expanding a bare `All` rule into a per-capability
+    /// map first so other capabilities keep their effective policy.
+    fn set(&mut self, cap: Capability, policy: PermissionPolicy) {
+        if let SiteRules::All(p) = *self {
+            let mut m: BTreeMap<Capability, PermissionPolicy> =
+                Capability::ALL.into_iter().map(|c| (c, p)).collect();
+            m.insert(cap, policy);
+            *self = SiteRules::PerCapability(m);
+        } else if let SiteRules::PerCapability(m) = self {
+            m.insert(cap, policy);
+        }
+    }
+}
+
+/// Per-site permission policy: a default plus host-suffix-keyed, per-capability
+/// overrides.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Permissions {
     pub default: PermissionPolicy,
-    pub sites: BTreeMap<String, PermissionPolicy>,
+    pub sites: BTreeMap<String, SiteRules>,
 }
 
 impl Permissions {
-    /// Resolve the policy for `host`, matching a site rule by exact host or
-    /// subdomain suffix, else the default.
-    pub fn policy_for(&self, host: &str) -> PermissionPolicy {
-        self.sites
-            .iter()
-            .find(|(site, _)| host == site.as_str() || host.ends_with(&format!(".{site}")))
-            .map(|(_, p)| *p)
-            .unwrap_or(self.default)
+    /// Resolve the policy for `host` and `cap`, matching a site rule by exact
+    /// host or subdomain suffix, else the default.
+    pub fn policy_for(&self, host: &str, cap: Capability) -> PermissionPolicy {
+        for (site, rules) in &self.sites {
+            if (host == site.as_str() || host.ends_with(&format!(".{site}")))
+                && let Some(p) = rules.get(cap)
+            {
+                return p;
+            }
+        }
+        self.default
     }
+
+    /// Set the policy for a single capability on `host`.
+    pub fn set_capability(&mut self, host: &str, cap: Capability, policy: PermissionPolicy) {
+        self.sites
+            .entry(host.to_string())
+            .or_insert_with(|| SiteRules::PerCapability(BTreeMap::new()))
+            .set(cap, policy);
+    }
+
+    /// Set one policy for every capability on `host`.
+    pub fn set_all(&mut self, host: &str, policy: PermissionPolicy) {
+        self.sites.insert(host.to_string(), SiteRules::All(policy));
+    }
+
+    /// Flatten the rules into display rows: one row per `All` site, one per
+    /// capability for per-capability sites, sorted by host then capability.
+    pub fn rows(&self) -> Vec<PermissionRow> {
+        let mut rows = Vec::new();
+        for (host, rules) in &self.sites {
+            match rules {
+                SiteRules::All(p) => rows.push(PermissionRow {
+                    host: host.clone(),
+                    capability: None,
+                    policy: *p,
+                }),
+                SiteRules::PerCapability(m) => {
+                    for (cap, p) in m {
+                        rows.push(PermissionRow {
+                            host: host.clone(),
+                            capability: Some(*cap),
+                            policy: *p,
+                        });
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    /// Apply a row's policy (used when cycling in the management view).
+    pub fn set_row(&mut self, row: &PermissionRow, policy: PermissionPolicy) {
+        match row.capability {
+            Some(cap) => self.set_capability(&row.host, cap, policy),
+            None => self.set_all(&row.host, policy),
+        }
+    }
+
+    /// Remove a row's rule, reverting it to the default.
+    pub fn revoke_row(&mut self, row: &PermissionRow) {
+        match row.capability {
+            None => {
+                self.sites.remove(&row.host);
+            }
+            Some(cap) => {
+                if let Some(SiteRules::PerCapability(m)) = self.sites.get_mut(&row.host) {
+                    m.remove(&cap);
+                    if m.is_empty() {
+                        self.sites.remove(&row.host);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A single flattened permission rule for the management view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRow {
+    pub host: String,
+    pub capability: Option<Capability>,
+    pub policy: PermissionPolicy,
+}
+
+/// A deferred permission request awaiting the user's decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionPrompt {
+    pub id: u64,
+    pub host: String,
+    pub capability: Capability,
+}
+
+/// State of the permission management list view.
+#[derive(Debug, Default)]
+pub struct PermissionViewState {
+    pub rows: Vec<PermissionRow>,
+    pub selected: usize,
 }
 
 /// User configuration, deserialized from TOML and adjustable at runtime.
@@ -403,10 +566,16 @@ impl Config {
             }
             "permissions.default" => self.permissions.default = PermissionPolicy::parse(value)?,
             key if key.starts_with("permissions.") => {
-                let host = &key["permissions.".len()..];
-                self.permissions
-                    .sites
-                    .insert(host.to_string(), PermissionPolicy::parse(value)?);
+                let rest = &key["permissions.".len()..];
+                let policy = PermissionPolicy::parse(value)?;
+                // A trailing capability segment sets that capability; otherwise
+                // the key is a bare host and sets every capability.
+                match rest.rsplit_once('.').and_then(|(host, last)| {
+                    Capability::parse(last).map(|cap| (host, cap))
+                }) {
+                    Some((host, cap)) => self.permissions.set_capability(host, cap, policy),
+                    None => self.permissions.set_all(rest, policy),
+                }
             }
             _ => return Err(format!("unknown setting: {key}")),
         }
@@ -437,6 +606,10 @@ pub struct State {
     next_request_id: u64,
     /// Whether web-content dark mode is active.
     pub dark_mode: bool,
+    /// Pending permission prompts; the front item is the one being shown.
+    pub prompts: VecDeque<PermissionPrompt>,
+    /// State of the permission management list view.
+    pub perm_view: PermissionViewState,
     /// Cleared to false to request shutdown.
     pub running: bool,
 }
@@ -457,5 +630,83 @@ impl State {
         let id = RequestId(self.next_request_id);
         self.next_request_id += 1;
         id
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_are_independent() {
+        let mut p = Permissions::default();
+        p.set_capability("example.com", Capability::Notifications, PermissionPolicy::Allow);
+        assert_eq!(
+            p.policy_for("example.com", Capability::Notifications),
+            PermissionPolicy::Allow
+        );
+        // Granting notifications must not grant the camera; it stays at default.
+        assert_eq!(
+            p.policy_for("example.com", Capability::Camera),
+            PermissionPolicy::default()
+        );
+    }
+
+    #[test]
+    fn set_all_applies_to_every_capability() {
+        let mut p = Permissions::default();
+        p.set_all("example.com", PermissionPolicy::Allow);
+        for cap in Capability::ALL {
+            assert_eq!(p.policy_for("example.com", cap), PermissionPolicy::Allow);
+        }
+    }
+
+    #[test]
+    fn revoke_reverts_to_default() {
+        let mut p = Permissions::default();
+        p.set_capability("example.com", Capability::Camera, PermissionPolicy::Allow);
+        let row = p.rows().into_iter().next().unwrap();
+        p.revoke_row(&row);
+        assert_eq!(
+            p.policy_for("example.com", Capability::Camera),
+            PermissionPolicy::default()
+        );
+        assert!(p.rows().is_empty());
+    }
+
+    #[test]
+    fn old_bare_string_config_parses_as_all() {
+        let toml = "default = \"ask\"\n[sites]\n\"example.com\" = \"allow\"\n";
+        let p: Permissions = toml::from_str(toml).unwrap();
+        assert_eq!(p.default, PermissionPolicy::Ask);
+        assert_eq!(
+            p.policy_for("example.com", Capability::Camera),
+            PermissionPolicy::Allow
+        );
+    }
+
+    #[test]
+    fn per_capability_config_parses() {
+        let toml =
+            "[sites]\n\"example.com\" = { geolocation = \"allow\", camera = \"deny\" }\n";
+        let p: Permissions = toml::from_str(toml).unwrap();
+        assert_eq!(
+            p.policy_for("example.com", Capability::Geolocation),
+            PermissionPolicy::Allow
+        );
+        assert_eq!(
+            p.policy_for("example.com", Capability::Camera),
+            PermissionPolicy::Deny
+        );
+    }
+
+    #[test]
+    fn permissions_round_trip_through_toml() {
+        let mut p = Permissions::default();
+        p.set_all("a.test", PermissionPolicy::Allow);
+        p.set_capability("b.test", Capability::Geolocation, PermissionPolicy::Deny);
+        let text = toml::to_string_pretty(&p).unwrap();
+        let back: Permissions = toml::from_str(&text).unwrap();
+        assert_eq!(p, back);
     }
 }

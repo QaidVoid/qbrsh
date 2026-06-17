@@ -4,13 +4,31 @@
 //! defaults when the file is missing or invalid. Reload is command-driven
 //! (`:config-source`); there is no file watcher.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::core::state::Config;
+use crate::core::state::{Config, Permissions};
 
 /// Path to the user config file.
 pub fn config_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "qbrsh").map(|p| p.config_dir().join("config.toml"))
+}
+
+/// Load the runtime permission store (per-site grants saved by the prompt and the
+/// management view), if present. This is data-dir state, separate from the
+/// user-authored `config.toml` `[permissions]`.
+pub fn load_permissions(path: &Path) -> Option<Permissions> {
+    let text = std::fs::read_to_string(path).ok()?;
+    toml::from_str(&text).ok()
+}
+
+/// Persist the runtime permission store to `path`.
+pub fn save_permissions(path: &Path, permissions: &Permissions) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = toml::to_string_pretty(permissions) {
+        let _ = std::fs::write(path, text);
+    }
 }
 
 /// Load configuration, falling back to defaults on any error.
@@ -58,24 +76,41 @@ mod tests {
 
     #[test]
     fn per_site_permission_lookup() {
-        use crate::core::state::PermissionPolicy;
+        use crate::core::state::{Capability, PermissionPolicy};
+        let cam = Capability::Camera;
+        let geo = Capability::Geolocation;
         let mut c = Config::default();
-        // Default policy is deny.
+        // Default policy is ask (the prompt decides).
         assert_eq!(
-            c.permissions.policy_for("example.com"),
-            PermissionPolicy::Deny
+            c.permissions.policy_for("example.com", cam),
+            PermissionPolicy::Ask
         );
+        // A bare host rule applies to every capability.
         assert!(c.set("permissions.github.com", "allow").is_ok());
         assert_eq!(
-            c.permissions.policy_for("github.com"),
+            c.permissions.policy_for("github.com", cam),
             PermissionPolicy::Allow
         );
         // Subdomains inherit the site rule by suffix.
         assert_eq!(
-            c.permissions.policy_for("gist.github.com"),
+            c.permissions.policy_for("gist.github.com", geo),
             PermissionPolicy::Allow
         );
-        assert_eq!(c.permissions.policy_for("other.com"), PermissionPolicy::Deny);
+        assert_eq!(
+            c.permissions.policy_for("other.com", cam),
+            PermissionPolicy::Ask
+        );
+        // A per-capability rule is independent of other capabilities.
+        assert!(c.set("permissions.example.org.geolocation", "allow").is_ok());
+        assert_eq!(
+            c.permissions.policy_for("example.org", geo),
+            PermissionPolicy::Allow
+        );
+        // Camera has no rule, so it falls back to the default (ask).
+        assert_eq!(
+            c.permissions.policy_for("example.org", cam),
+            PermissionPolicy::Ask
+        );
         assert!(c.set("permissions.default", "ask").is_ok());
         assert_eq!(c.permissions.default, PermissionPolicy::Ask);
         assert!(c.set("permissions.x", "bogus").is_err());

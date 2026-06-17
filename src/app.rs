@@ -37,6 +37,7 @@ struct GtkEffectRunner {
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
     sessions_dir: PathBuf,
+    permissions_path: PathBuf,
     mailbox: Mailbox,
 }
 
@@ -57,11 +58,25 @@ impl GtkEffectRunner {
     }
 
     fn render_status(&self, state: &State) {
+        // A pending permission prompt takes over the status bar.
+        if state.mode.current == Mode::Prompt
+            && let Some(p) = state.prompts.front()
+        {
+            self.ui.statusbar.set_text(&format!(
+                "Allow {} for {}?  [y]es  [n]o  [a]lways  [d]eny-always  (Esc denies)",
+                p.capability.as_str(),
+                p.host,
+            ));
+            self.ui.commandline.set_visible(false);
+            return;
+        }
         let mode = match state.mode.current {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Command => "COMMAND",
             Mode::Hint => "HINT",
+            Mode::Prompt => "PROMPT",
+            Mode::Permissions => "PERMISSIONS",
         };
         let url = state.tabs.active().map(|t| t.url.clone()).unwrap_or_default();
         let prog = state.tabs.active().map(|t| t.progress).unwrap_or(0.0);
@@ -137,6 +152,45 @@ impl GtkEffectRunner {
                 "  "
             };
             let label = gtk4::Label::new(Some(&format!("{marker}{}", item.display)));
+            label.set_xalign(0.0);
+            self.ui.completion.append(&label);
+        }
+    }
+
+    fn render_permissions(&self, state: &State) {
+        while let Some(child) = self.ui.completion.first_child() {
+            self.ui.completion.remove(&child);
+        }
+        let show = state.mode.current == Mode::Permissions;
+        self.ui.completion.set_visible(show);
+        if !show {
+            return;
+        }
+        if state.perm_view.rows.is_empty() {
+            let label = gtk4::Label::new(Some("no per-site permissions set"));
+            label.set_xalign(0.0);
+            self.ui.completion.append(&label);
+            return;
+        }
+        let header = gtk4::Label::new(Some(
+            "  [a]llow  [d]eny  a[s]k  [x] revoke  j/k move  Esc close",
+        ));
+        header.set_xalign(0.0);
+        self.ui.completion.append(&header);
+        for (i, row) in state.perm_view.rows.iter().enumerate() {
+            let marker = if i == state.perm_view.selected {
+                "▸ "
+            } else {
+                "  "
+            };
+            let cap = row.capability.map(|c| c.as_str()).unwrap_or("all");
+            let policy = match row.policy {
+                crate::core::state::PermissionPolicy::Allow => "allow",
+                crate::core::state::PermissionPolicy::Ask => "ask",
+                crate::core::state::PermissionPolicy::Deny => "deny",
+            };
+            let label =
+                gtk4::Label::new(Some(&format!("{marker}{}  {cap}  {policy}", row.host)));
             label.set_xalign(0.0);
             self.ui.completion.append(&label);
         }
@@ -244,6 +298,10 @@ impl EffectRunner for GtkEffectRunner {
             }
             Effect::ApplyTheme => self.apply_theme(state),
             Effect::SyncPermissions(permissions) => *self.permissions.borrow_mut() = permissions,
+            Effect::ResolvePermission { id, allow } => self.engine.resolve_permission(id, allow),
+            Effect::SavePermissions(permissions) => {
+                config::save_permissions(&self.permissions_path, &permissions);
+            }
             Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(config::load())),
             Effect::SaveSession { name, urls } => {
                 if let Some(path) = self.session_path(&name) {
@@ -293,6 +351,7 @@ impl EffectRunner for GtkEffectRunner {
             Effect::RenderStatus => self.render_status(state),
             Effect::RenderTabs => self.render_tabs(state),
             Effect::RenderCompletion => self.render_completion(state),
+            Effect::RenderPermissions => self.render_permissions(state),
             Effect::ShowMessage { text, .. } => {
                 self.ui.statusbar.set_text(&text);
             }
@@ -335,7 +394,15 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let (mailbox, rx) = Mailbox::channel();
     let ui = Ui::build(app);
     let dir = data_dir();
-    let config = config::load();
+    let mut config = config::load();
+    // Layer the runtime permission store (prompt/management grants) over the
+    // user-authored config defaults; the store wins per site.
+    let permissions_path = dir.join("permissions.toml");
+    if let Some(stored) = config::load_permissions(&permissions_path) {
+        for (host, rules) in stored.sites {
+            config.permissions.sites.insert(host, rules);
+        }
+    }
     let blocklist = std::rc::Rc::new(crate::adblock::load(&dir.join("adblock")));
     let permissions: PermissionMirror =
         std::rc::Rc::new(std::cell::RefCell::new(config.permissions.clone()));
@@ -398,6 +465,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         quickmarks_path,
         bookmarks_path,
         sessions_dir: dir.join("sessions"),
+        permissions_path,
         mailbox: mailbox.clone(),
     };
     runner.apply_theme(&state);

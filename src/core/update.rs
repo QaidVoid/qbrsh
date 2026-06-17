@@ -10,19 +10,18 @@ use crate::core::completion::{CompletionItem, complete};
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
-use crate::core::state::{Bookmark, Mode, State};
+use crate::core::state::{Bookmark, Mode, PermissionPolicy, PermissionPrompt, State};
 use crate::core::trie::TrieMatch;
 
 /// Apply a single message to the state and return the effects to perform.
 pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     match msg {
-        Msg::Key(key) => {
-            if state.mode.current == Mode::Hint {
-                handle_hint_key(state, key)
-            } else {
-                handle_key(state, key)
-            }
-        }
+        Msg::Key(key) => match state.mode.current {
+            Mode::Hint => handle_hint_key(state, key),
+            Mode::Prompt => handle_prompt_key(state, key),
+            Mode::Permissions => handle_permissions_key(state, key),
+            _ => handle_key(state, key),
+        },
         Msg::Command(cmd) => handle_command(state, cmd),
 
         Msg::Load { tab, event } => {
@@ -292,6 +291,23 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             vec![Effect::ResolvePluginEval { id, result }]
         }
 
+        Msg::PermissionRequested {
+            id,
+            host,
+            capability,
+        } => {
+            state.prompts.push_back(PermissionPrompt {
+                id,
+                host,
+                capability,
+            });
+            // Show this prompt now if no other is already being answered.
+            if state.prompts.len() == 1 {
+                state.mode.enter(Mode::Prompt);
+            }
+            vec![Effect::RenderStatus]
+        }
+
         Msg::Crashed { tab } => {
             let mut effects = Vec::new();
             if let Some(t) = state.tabs.get_mut(tab) {
@@ -361,6 +377,104 @@ const DARK_APPLY_JS: &str = "(function(){var s=document.getElementById('qbrsh-da
 /// Remove the dark-mode style.
 const DARK_REMOVE_JS: &str =
     "(function(){var s=document.getElementById('qbrsh-dark');if(s)s.remove();})()";
+
+/// Handle a key press while answering a permission prompt: `y` allow once, `a`
+/// always allow, `n` deny once, `d` always deny. Other keys are ignored.
+fn handle_prompt_key(state: &mut State, key: Key) -> Vec<Effect> {
+    let (allow, remember) = match key.sym.as_str() {
+        "y" => (true, false),
+        "a" => (true, true),
+        "n" => (false, false),
+        "d" => (false, true),
+        _ => return Vec::new(),
+    };
+    resolve_front_prompt(state, allow, remember)
+}
+
+/// Resolve the active permission prompt, optionally persisting the choice, then
+/// advance to the next queued prompt or leave prompt mode.
+fn resolve_front_prompt(state: &mut State, allow: bool, remember: bool) -> Vec<Effect> {
+    let Some(prompt) = state.prompts.pop_front() else {
+        state.mode.leave();
+        return vec![Effect::RenderStatus];
+    };
+    let mut effects = vec![Effect::ResolvePermission {
+        id: prompt.id,
+        allow,
+    }];
+    if remember {
+        let policy = if allow {
+            PermissionPolicy::Allow
+        } else {
+            PermissionPolicy::Deny
+        };
+        state
+            .config
+            .permissions
+            .set_capability(&prompt.host, prompt.capability, policy);
+        effects.push(Effect::SyncPermissions(state.config.permissions.clone()));
+        effects.push(Effect::SavePermissions(state.config.permissions.clone()));
+    }
+    if state.prompts.is_empty() {
+        state.mode.leave();
+    }
+    effects.push(Effect::RenderStatus);
+    effects
+}
+
+/// Handle a key press in the permission management view: move the selection,
+/// set the selected rule's policy, revoke it, or (via ModeLeave) close.
+fn handle_permissions_key(state: &mut State, key: Key) -> Vec<Effect> {
+    let len = state.perm_view.rows.len();
+    match key.sym.as_str() {
+        "j" | "Down" if len > 0 => {
+            state.perm_view.selected = (state.perm_view.selected + 1) % len;
+            vec![Effect::RenderPermissions]
+        }
+        "k" | "Up" if len > 0 => {
+            state.perm_view.selected = (state.perm_view.selected + len - 1) % len;
+            vec![Effect::RenderPermissions]
+        }
+        "a" | "d" | "s" if len > 0 => {
+            let policy = match key.sym.as_str() {
+                "a" => PermissionPolicy::Allow,
+                "d" => PermissionPolicy::Deny,
+                _ => PermissionPolicy::Ask,
+            };
+            let row = state.perm_view.rows[state.perm_view.selected].clone();
+            state.config.permissions.set_row(&row, policy);
+            refresh_permission_rows(state);
+            persist_permission_view(state)
+        }
+        "x" if len > 0 => {
+            let row = state.perm_view.rows[state.perm_view.selected].clone();
+            state.config.permissions.revoke_row(&row);
+            refresh_permission_rows(state);
+            persist_permission_view(state)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Rebuild the management rows from config and clamp the selection.
+fn refresh_permission_rows(state: &mut State) {
+    state.perm_view.rows = state.config.permissions.rows();
+    let len = state.perm_view.rows.len();
+    if len == 0 {
+        state.perm_view.selected = 0;
+    } else if state.perm_view.selected >= len {
+        state.perm_view.selected = len - 1;
+    }
+}
+
+/// Sync and persist after a management-view change.
+fn persist_permission_view(state: &State) -> Vec<Effect> {
+    vec![
+        Effect::SyncPermissions(state.config.permissions.clone()),
+        Effect::SavePermissions(state.config.permissions.clone()),
+        Effect::RenderPermissions,
+    ]
+}
 
 /// Handle a key press while in hint mode: type into the label filter, follow a
 /// uniquely-matched hint, or remove a character.
@@ -655,6 +769,14 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
             vec![Effect::RenderStatus]
         }
+        Command::ModeLeave if state.mode.current == Mode::Prompt => {
+            // Dismissing the prompt denies the request without persisting.
+            resolve_front_prompt(state, false, false)
+        }
+        Command::ModeLeave if state.mode.current == Mode::Permissions => {
+            state.mode.leave();
+            vec![Effect::RenderPermissions, Effect::RenderStatus]
+        }
         Command::ModeLeave => {
             let was_hint = state.mode.current == Mode::Hint;
             state.mode.leave();
@@ -883,6 +1005,13 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
 
         Command::Memory => vec![Effect::ReportMemory],
 
+        Command::Permissions => {
+            state.perm_view.rows = state.config.permissions.rows();
+            state.perm_view.selected = 0;
+            state.mode.enter(Mode::Permissions);
+            vec![Effect::RenderPermissions, Effect::RenderStatus]
+        }
+
         Command::Quit => {
             state.running = false;
             vec![Effect::Quit]
@@ -1029,6 +1158,67 @@ mod tests {
 
     fn press(state: &mut State, sym: &str) -> Vec<Effect> {
         update(state, Msg::Key(Key::plain(sym)))
+    }
+
+    fn request_permission(state: &mut State, id: u64, host: &str) -> Vec<Effect> {
+        update(
+            state,
+            Msg::PermissionRequested {
+                id,
+                host: host.to_string(),
+                capability: crate::core::state::Capability::Camera,
+            },
+        )
+    }
+
+    #[test]
+    fn permission_request_enters_prompt_mode() {
+        let mut state = state_with_tab();
+        request_permission(&mut state, 1, "example.com");
+        assert_eq!(state.mode.current, Mode::Prompt);
+        assert_eq!(state.prompts.len(), 1);
+    }
+
+    #[test]
+    fn allow_once_grants_without_persisting() {
+        let mut state = state_with_tab();
+        request_permission(&mut state, 7, "example.com");
+        let effects = press(&mut state, "y");
+        assert!(effects.contains(&Effect::ResolvePermission { id: 7, allow: true }));
+        assert!(!effects.iter().any(|e| matches!(e, Effect::SavePermissions(_))));
+        assert_eq!(state.mode.current, Mode::Normal);
+        // Nothing persisted: the site still resolves to the default (ask).
+        assert_eq!(
+            state.config.permissions.policy_for("example.com", crate::core::state::Capability::Camera),
+            PermissionPolicy::Ask
+        );
+    }
+
+    #[test]
+    fn always_allow_persists_rule() {
+        let mut state = state_with_tab();
+        request_permission(&mut state, 3, "example.com");
+        let effects = press(&mut state, "a");
+        assert!(effects.contains(&Effect::ResolvePermission { id: 3, allow: true }));
+        assert!(effects.iter().any(|e| matches!(e, Effect::SavePermissions(_))));
+        assert!(effects.iter().any(|e| matches!(e, Effect::SyncPermissions(_))));
+        assert_eq!(
+            state.config.permissions.policy_for("example.com", crate::core::state::Capability::Camera),
+            PermissionPolicy::Allow
+        );
+    }
+
+    #[test]
+    fn queued_prompt_waits_for_first() {
+        let mut state = state_with_tab();
+        request_permission(&mut state, 1, "a.test");
+        request_permission(&mut state, 2, "b.test");
+        assert_eq!(state.prompts.len(), 2);
+        // Deny the first; the second stays queued and we remain in Prompt mode.
+        let effects = press(&mut state, "n");
+        assert!(effects.contains(&Effect::ResolvePermission { id: 1, allow: false }));
+        assert_eq!(state.mode.current, Mode::Prompt);
+        assert_eq!(state.prompts.front().map(|p| p.id), Some(2));
     }
 
     #[test]

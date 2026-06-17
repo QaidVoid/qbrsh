@@ -59,7 +59,7 @@ runs the highlighted item (or the typed text if none is selected).
 `:open`, `:tabopen`, `:back`, `:forward`, `:reload`, `:tab-close/next/prev/focus`,
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:set`, `:config-source`, `:darkmode`,
-`:session-save/load`, `:plugin-reload`, `:quit`.
+`:session-save/load`, `:plugin-reload`, `:permissions`, `:quit`.
 
 ## Configuration
 
@@ -78,17 +78,28 @@ family = "monospace"
 size = 11
 
 [permissions]
-# Default policy for geolocation/notifications/media: ask, allow, or deny.
-# (ask currently falls back to deny: there is no prompt UI yet.)
-default = "deny"
+# Default policy for a capability with no rule: ask, allow, or deny.
+# "ask" shows an interactive prompt (allow once / deny once / always / deny-always).
+default = "ask"
 
 [permissions.sites]
-# Per-site overrides, matched by exact host or subdomain suffix.
+# Per-site overrides, matched by exact host or subdomain suffix. A bare policy
+# applies to every capability; a table sets capabilities (geolocation,
+# notifications, camera, microphone) independently.
 "example.com" = "allow"
+"maps.example.org" = { geolocation = "allow", camera = "deny" }
 ```
 
-Change settings live with `:set colors.accent "#ff0000"` or
-`:set permissions.example.com allow`, and reload the file with `:config-source`.
+Permissions are decided per capability. When a capability's policy is `ask`, a
+prompt appears: `y` allow once, `n` deny once, `a` always allow, `d` always
+deny (Esc denies). "Always" choices and edits made in the management view
+(`:permissions`, where `a`/`d`/`s` set and `x` revokes the selected rule)
+persist to a data-dir store, separate from your hand-written `config.toml`.
+
+Change settings live with `:set colors.accent "#ff0000"`,
+`:set permissions.example.com allow` (all capabilities), or
+`:set permissions.example.com.camera deny` (one capability), and reload the file
+with `:config-source`.
 
 ## Extensibility
 

@@ -6,7 +6,7 @@
 
 use crate::core::command::Command;
 use crate::core::key::Key;
-use crate::core::state::{Config, TabId};
+use crate::core::state::{Capability, Config, TabId};
 
 /// Correlates an asynchronous request (e.g. a JS evaluation) with its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -87,4 +87,11 @@ pub enum Msg {
     PluginEvalRequest { id: u64, script: String },
     /// The result of a plugin's awaited JS evaluation, to resume the plugin.
     PluginEvalResult { id: u64, result: String },
+    /// A page requested a capability whose policy is `ask`; the engine holds the
+    /// request (keyed by `id`) until the user's decision resolves it.
+    PermissionRequested {
+        id: u64,
+        host: String,
+        capability: Capability,
+    },
 }

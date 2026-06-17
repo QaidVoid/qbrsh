@@ -12,6 +12,7 @@ mod marks;
 mod plugin;
 mod ui;
 
+use gtk4::gio::ApplicationFlags;
 use gtk4::prelude::*;
 use gtk4::Application;
 
@@ -29,7 +30,13 @@ fn main() {
         return;
     }
 
-    let app = Application::builder().application_id(APP_ID).build();
+    // NON_UNIQUE: each launch is its own process. We do not use GApplication's
+    // single-instance activation; cross-instance "open URL in running browser"
+    // is handled by our own IPC (forward_url above).
+    let app = Application::builder()
+        .application_id(APP_ID)
+        .flags(ApplicationFlags::NON_UNIQUE)
+        .build();
     app.connect_activate(move |a| app::run(a, url.clone()));
     app.run_with_args::<&str>(&[]);
 }

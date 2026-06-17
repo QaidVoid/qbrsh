@@ -68,10 +68,16 @@ pub enum Effect {
     RenderTabs,
     /// Re-render the completion popup from current state.
     RenderCompletion,
+    /// Re-render the permission management list from current state.
+    RenderPermissions,
     /// Apply the current theme (colors, font) to the chrome.
     ApplyTheme,
     /// Push the current per-site permission policy to the engine.
     SyncPermissions(Permissions),
+    /// Resolve a deferred permission request (held by the engine) by `id`.
+    ResolvePermission { id: u64, allow: bool },
+    /// Persist the per-site permission rules to the data-dir store.
+    SavePermissions(Permissions),
     /// Reload the configuration file from disk.
     ReloadConfig,
     /// Persist a named session's tab URLs.
