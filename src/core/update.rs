@@ -10,7 +10,7 @@ use crate::core::completion::complete;
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
-use crate::core::state::{Mode, State};
+use crate::core::state::{Bookmark, Mode, State};
 use crate::core::trie::TrieMatch;
 
 /// Apply a single message to the state and return the effects to perform.
@@ -143,7 +143,8 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                 state.completion.suppress = false;
                 return Vec::new();
             }
-            state.completion.items = complete(&state.command_line.text);
+            let items = complete(&state.command_line.text, state);
+            state.completion.items = items;
             state.completion.selected = None;
             vec![Effect::RenderCompletion]
         }
@@ -316,6 +317,28 @@ fn follow_hint(state: &mut State, label: &str) -> Vec<Effect> {
             ]
         }
     }
+}
+
+/// Snapshot the quickmarks for persistence.
+fn save_quickmarks(state: &State) -> Effect {
+    Effect::SaveQuickmarks(
+        state
+            .quickmarks
+            .iter()
+            .map(|(name, url)| (name.clone(), url.clone()))
+            .collect(),
+    )
+}
+
+/// Snapshot the bookmarks for persistence.
+fn save_bookmarks(state: &State) -> Effect {
+    Effect::SaveBookmarks(
+        state
+            .bookmarks
+            .iter()
+            .map(|b| (b.url.clone(), b.title.clone()))
+            .collect(),
+    )
 }
 
 /// Build a fire-and-forget JS evaluation against the active tab.
@@ -503,7 +526,8 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.mode.enter(Mode::Command);
             state.command_line.active = true;
             state.command_line.text = text;
-            state.completion.items = complete(&state.command_line.text);
+            let items = complete(&state.command_line.text, state);
+            state.completion.items = items;
             state.completion.selected = None;
             vec![Effect::RenderStatus, Effect::RenderCompletion]
         }
@@ -545,6 +569,92 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                     text: format!("yanked: {value}"),
                 },
             ]
+        }
+
+        Command::QuickmarkSave(name) => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return vec![Effect::ShowMessage {
+                    level: MessageLevel::Error,
+                    text: "quickmark name required".to_string(),
+                }];
+            }
+            let Some(url) = state.tabs.active().map(|t| t.url.clone()) else {
+                return Vec::new();
+            };
+            state.quickmarks.insert(name.clone(), url);
+            vec![
+                save_quickmarks(state),
+                Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: format!("quickmark '{name}' saved"),
+                },
+            ]
+        }
+        Command::QuickmarkLoad(name) => match state.quickmarks.get(name.trim()) {
+            Some(url) => {
+                let url = url.clone();
+                handle_command(
+                    state,
+                    Command::Open {
+                        target: OpenTarget::Current,
+                        input: url,
+                    },
+                )
+            }
+            None => vec![Effect::ShowMessage {
+                level: MessageLevel::Error,
+                text: format!("no quickmark '{}'", name.trim()),
+            }],
+        },
+        Command::QuickmarkDel(name) => {
+            if state.quickmarks.remove(name.trim()).is_some() {
+                vec![
+                    save_quickmarks(state),
+                    Effect::ShowMessage {
+                        level: MessageLevel::Info,
+                        text: format!("quickmark '{}' deleted", name.trim()),
+                    },
+                ]
+            } else {
+                Vec::new()
+            }
+        }
+        Command::BookmarkAdd => {
+            let Some((url, title)) = state.tabs.active().map(|t| (t.url.clone(), t.title.clone()))
+            else {
+                return Vec::new();
+            };
+            if !state.bookmarks.iter().any(|b| b.url == url) {
+                state.bookmarks.push(Bookmark {
+                    url: url.clone(),
+                    title,
+                });
+            }
+            vec![
+                save_bookmarks(state),
+                Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: format!("bookmarked {url}"),
+                },
+            ]
+        }
+        Command::BookmarkLoad(url) => handle_command(
+            state,
+            Command::Open {
+                target: OpenTarget::Current,
+                input: url,
+            },
+        ),
+        Command::BookmarkDel(url) => {
+            let url = url.trim().to_string();
+            let before = state.bookmarks.len();
+            state.bookmarks.retain(|b| b.url != url);
+            if state.bookmarks.len() != before {
+                vec![save_bookmarks(state)]
+            } else {
+                Vec::new()
+            }
         }
 
         Command::Quit => {
@@ -1121,6 +1231,36 @@ mod tests {
             .filter(|e| matches!(e, Effect::CloseTab { .. }))
             .count();
         assert_eq!(closed, 2);
+    }
+
+    #[test]
+    fn quickmark_save_then_load() {
+        let mut state = state_with_tab();
+        update(
+            &mut state,
+            Msg::Command(Command::QuickmarkSave("ex".to_string())),
+        );
+        assert_eq!(
+            state.quickmarks.get("ex").map(String::as_str),
+            Some("https://example.com")
+        );
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::QuickmarkLoad("ex".to_string())),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::LoadUri { uri, .. } if uri == "https://example.com"
+        )));
+    }
+
+    #[test]
+    fn bookmark_add_dedups_by_url() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::BookmarkAdd));
+        update(&mut state, Msg::Command(Command::BookmarkAdd));
+        assert_eq!(state.bookmarks.len(), 1);
+        assert_eq!(state.bookmarks[0].url, "https://example.com");
     }
 
     #[test]

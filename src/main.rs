@@ -5,6 +5,7 @@ mod core;
 mod engine;
 mod history;
 mod input;
+mod marks;
 mod ui;
 
 use gtk4::prelude::*;

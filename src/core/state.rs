@@ -6,7 +6,7 @@
 //! the skeleton establishes the ownership shape with the fields the core already
 //! exercises (mode, tabs, input, command line, status, config).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::core::bindings::default_bindings;
 use crate::core::command::HintTarget;
@@ -287,6 +287,13 @@ impl HintState {
     }
 }
 
+/// A saved bookmark.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bookmark {
+    pub url: String,
+    pub title: String,
+}
+
 /// User configuration. Grows as the config subsystem is ported.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -312,6 +319,10 @@ pub struct State {
     pub status: StatusLine,
     pub hints: HintState,
     pub completion: CompletionState,
+    /// Named shortcuts to URLs (name → url).
+    pub quickmarks: BTreeMap<String, String>,
+    /// Saved bookmarks.
+    pub bookmarks: Vec<Bookmark>,
     pub config: Config,
     /// Normal-mode key bindings.
     pub bindings: BindingTrie,

@@ -57,6 +57,12 @@ pub fn default_bindings() -> BindingTrie {
     bind("yy", "yank");
     bind("yt", "yank title");
 
+    // Bookmarks and quickmarks
+    bind("M", "bookmark-add");
+    bind("m", "cmd-set-text :quickmark-save ");
+    bind("b", "cmd-set-text :quickmark-load ");
+    bind("gb", "cmd-set-text :bookmark-load ");
+
     // Mode switching
     bind("i", "mode-enter insert");
     bind("Escape", "mode-leave");

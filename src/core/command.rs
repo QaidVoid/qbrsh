@@ -93,6 +93,18 @@ pub enum Command {
     Accept,
     /// Copy a property of the active tab to the clipboard.
     Yank(YankWhat),
+    /// Save the active page as a named quickmark.
+    QuickmarkSave(String),
+    /// Open the quickmark with the given name.
+    QuickmarkLoad(String),
+    /// Delete the quickmark with the given name.
+    QuickmarkDel(String),
+    /// Bookmark the active page.
+    BookmarkAdd,
+    /// Open the bookmark with the given URL.
+    BookmarkLoad(String),
+    /// Delete the bookmark with the given URL.
+    BookmarkDel(String),
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -169,6 +181,12 @@ impl Command {
                 Some(&"title") => YankWhat::Title,
                 Some(other) => return Err(format!("unknown yank target: {other}")),
             }),
+            "quickmark-save" => Command::QuickmarkSave(arg),
+            "quickmark-load" => Command::QuickmarkLoad(arg),
+            "quickmark-del" => Command::QuickmarkDel(arg),
+            "bookmark-add" => Command::BookmarkAdd,
+            "bookmark-load" => Command::BookmarkLoad(arg),
+            "bookmark-del" => Command::BookmarkDel(arg),
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -233,5 +251,11 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("mode-enter", "Enter an input mode"),
     ("mode-leave", "Return to normal mode"),
     ("yank", "Copy the page URL or title"),
+    ("quickmark-save", "Save the page as a named quickmark"),
+    ("quickmark-load", "Open a quickmark by name"),
+    ("quickmark-del", "Delete a quickmark"),
+    ("bookmark-add", "Bookmark the current page"),
+    ("bookmark-load", "Open a bookmark"),
+    ("bookmark-del", "Delete a bookmark"),
     ("quit", "Quit the browser"),
 ];

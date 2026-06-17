@@ -5,6 +5,7 @@
 //! carried out by [`GtkEffectRunner`], which holds the UI and the per-tab views.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use gtk4::Application;
 use gtk4::prelude::*;
@@ -12,11 +13,12 @@ use gtk4::prelude::*;
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
-use crate::core::state::{Config, Mode, State, TabId};
+use crate::core::state::{Bookmark, Config, Mode, State, TabId};
 use crate::engine::traits::EngineView;
 use crate::engine::webkit::WebKitEngine;
 use crate::history::History;
 use crate::input;
+use crate::marks;
 use crate::ui::window::Ui;
 
 /// Executes effects against the GTK UI and the WebKit views.
@@ -26,6 +28,8 @@ struct GtkEffectRunner {
     engine: WebKitEngine,
     views: HashMap<TabId, Box<dyn EngineView>>,
     history: History,
+    quickmarks_path: PathBuf,
+    bookmarks_path: PathBuf,
     mailbox: Mailbox,
 }
 
@@ -187,6 +191,12 @@ impl EffectRunner for GtkEffectRunner {
             Effect::SetClipboard(text) => {
                 self.ui.window.clipboard().set_text(&text);
             }
+            Effect::SaveQuickmarks(entries) => {
+                marks::save_quickmarks(&self.quickmarks_path, &entries);
+            }
+            Effect::SaveBookmarks(entries) => {
+                marks::save_bookmarks(&self.bookmarks_path, &entries);
+            }
             Effect::RecordHistory { uri, title } => {
                 self.history.record(&uri, &title);
             }
@@ -201,13 +211,13 @@ impl EffectRunner for GtkEffectRunner {
     }
 }
 
-/// Resolve the history database path under the XDG data directory.
-fn history_db_path() -> std::path::PathBuf {
-    let data_dir = directories::ProjectDirs::from("", "", "qbrsh")
+/// The XDG data directory for qbrsh, created if missing.
+fn data_dir() -> PathBuf {
+    let dir = directories::ProjectDirs::from("", "", "qbrsh")
         .map(|p| p.data_dir().to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let _ = std::fs::create_dir_all(&data_dir);
-    data_dir.join("history.db")
+        .unwrap_or_else(|| PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 /// Build the window, seed the first tab, and start the dispatch loop.
@@ -216,7 +226,19 @@ pub fn run(app: &Application) {
     let ui = Ui::build(app);
     let engine = WebKitEngine::new(false);
 
+    let dir = data_dir();
+    let quickmarks_path = dir.join("quickmarks");
+    let bookmarks_path = dir.join("bookmarks");
+
     let mut state = State::new(Config::default());
+    state.quickmarks = marks::load_quickmarks(&quickmarks_path)
+        .into_iter()
+        .collect();
+    state.bookmarks = marks::load_bookmarks(&bookmarks_path)
+        .into_iter()
+        .map(|(url, title)| Bookmark { url, title })
+        .collect();
+
     let home = state.config.homepage.clone();
     let id = state.tabs.open(&home);
     state.tabs.focus_last();
@@ -228,7 +250,7 @@ pub fn run(app: &Application) {
     view.load_uri(&home);
     views.insert(id, view);
 
-    let history = History::open(&history_db_path());
+    let history = History::open(&dir.join("history.db"));
 
     let mut runner = GtkEffectRunner {
         app: app.clone(),
@@ -236,6 +258,8 @@ pub fn run(app: &Application) {
         engine,
         views,
         history,
+        quickmarks_path,
+        bookmarks_path,
         mailbox: mailbox.clone(),
     };
     runner.render_status(&state);

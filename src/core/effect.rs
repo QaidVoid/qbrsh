@@ -51,6 +51,10 @@ pub enum Effect {
     FocusTab { tab: TabId },
     /// Write text to the system clipboard.
     SetClipboard(String),
+    /// Persist the quickmarks (name, url) to disk.
+    SaveQuickmarks(Vec<(String, String)>),
+    /// Persist the bookmarks (url, title) to disk.
+    SaveBookmarks(Vec<(String, String)>),
     /// Record a visited page in history.
     RecordHistory { uri: String, title: String },
     /// Re-render the status bar from current state.
