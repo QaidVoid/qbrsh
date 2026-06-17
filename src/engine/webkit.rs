@@ -117,6 +117,14 @@ fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox, blocklist: Rc<H
         mb.send(Msg::Crashed { tab });
     });
 
+    // Deny permission requests (geolocation, notifications, media) by default.
+    // Per-site allow lists are a future config addition. Script dialogs
+    // (alert/confirm/prompt) use WebKit's built-in handling.
+    view.connect_permission_request(|_v, request| {
+        request.deny();
+        true
+    });
+
     // Show a styled error page when a load fails (but not when we cancelled it,
     // e.g. a new-window request handed off to a tab).
     view.connect_load_failed(|v, _event, uri, error| {
