@@ -2,6 +2,10 @@
 name = "qbrsh"
 version = "0.1.0"
 edition = "2024"
+description = "A fast, keyboard-driven web browser"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/QaidVoid/qbrsh"
+readme = "README.md"
 
 [dependencies]
 gtk4 = "0.11"

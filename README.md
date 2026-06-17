@@ -113,3 +113,8 @@ qbrsh does not run Firefox/Chrome extensions. Extensibility is native:
   ```
 
   Launching `qbrsh <url>` while an instance is running forwards the URL to it.
+
+## License
+
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at
+your option.
