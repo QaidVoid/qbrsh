@@ -3,6 +3,7 @@
 mod app;
 mod core;
 mod engine;
+mod input;
 mod ui;
 
 use gtk4::prelude::*;

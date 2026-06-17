@@ -6,16 +6,16 @@
 
 use std::collections::HashMap;
 
+use gtk4::Application;
 use gtk4::prelude::*;
-use gtk4::{Application, EventControllerKey, PropagationPhase};
 
-use crate::core::command::Command;
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
 use crate::core::state::{Config, Mode, State, TabId};
 use crate::engine::traits::EngineView;
 use crate::engine::webkit::WebKitEngine;
+use crate::input;
 use crate::ui::window::Ui;
 
 /// Executes effects against the GTK UI and the WebKit views.
@@ -46,9 +46,19 @@ impl GtkEffectRunner {
             .scroll_percent
             .map(|p| format!("  {p}%"))
             .unwrap_or_default();
+        let pending = format!(
+            "{}{}",
+            state.input.count,
+            crate::core::key::display_sequence(&state.input.pending)
+        );
+        let pending = if pending.is_empty() {
+            String::new()
+        } else {
+            format!("  {pending}")
+        };
         self.ui
             .statusbar
-            .set_text(&format!("-- {mode} --  {url}{progress}{scroll}"));
+            .set_text(&format!("-- {mode} --  {url}{progress}{scroll}{pending}"));
 
         if state.command_line.active {
             if self.ui.commandline.text().as_str() != state.command_line.text.as_str() {
@@ -162,39 +172,6 @@ impl EffectRunner for GtkEffectRunner {
     }
 }
 
-/// A minimal bootstrap key handler so the browser is usable before the binding
-/// trie lands (group 3): `:` opens the command line, Escape leaves the mode.
-/// Everything else propagates to the focused web view or command entry.
-fn wire_input(ui: &Ui, mailbox: &Mailbox) {
-    let key = EventControllerKey::new();
-    key.set_propagation_phase(PropagationPhase::Capture);
-    let mb = mailbox.clone();
-    let commandline = ui.commandline.clone();
-    key.connect_key_pressed(move |_, keyval, _, _| {
-        if keyval == gdk4::Key::Escape {
-            mb.send(Msg::Command(Command::ModeLeave));
-            return glib::Propagation::Stop;
-        }
-        if WidgetExt::is_visible(&commandline) {
-            return glib::Propagation::Proceed;
-        }
-        if keyval == gdk4::Key::colon {
-            mb.send(Msg::Command(Command::SetCommandLine(":".to_string())));
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
-    });
-    ui.window.add_controller(key);
-
-    let mb = mailbox.clone();
-    ui.commandline
-        .connect_activate(move |_| mb.send(Msg::Command(Command::Accept)));
-
-    let mb = mailbox.clone();
-    ui.commandline
-        .connect_changed(move |e| mb.send(Msg::CommandLineChanged(e.text().to_string())));
-}
-
 /// Build the window, seed the first tab, and start the dispatch loop.
 pub fn run(app: &Application) {
     let (mailbox, rx) = Mailbox::channel();
@@ -223,12 +200,13 @@ pub fn run(app: &Application) {
     runner.render_status(&state);
     runner.render_tabs(&state);
 
-    wire_input(&ui, &mailbox);
+    let mode_mirror = input::install(&ui, &mailbox);
     ui.window.present();
 
     glib::MainContext::default().spawn_local(async move {
         while let Ok(msg) = rx.recv().await {
             dispatch(&mut state, &mut runner, &mailbox, msg);
+            mode_mirror.set(state.mode.current);
         }
     });
 }
