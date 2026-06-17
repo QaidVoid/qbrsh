@@ -6,13 +6,15 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::path::Path;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
     HardwareAccelerationPolicy, NavigationPolicyDecision, NetworkSession, PolicyDecisionType,
-    Settings, UserContentInjectedFrames, UserScript, UserScriptInjectionTime, WebView,
+    Settings, UserContentFilter, UserContentFilterStore, UserContentInjectedFrames,
+    UserContentManager, UserScript, UserScriptInjectionTime, WebView,
 };
 
 use crate::adblock;
@@ -32,21 +34,58 @@ pub struct WebKitEngine {
     session: NetworkSession,
     blocklist: Rc<HashSet<String>>,
     permissions: PermissionMirror,
+    /// Kept alive for the duration of the engine; backs the compiled filter.
+    _filter_store: UserContentFilterStore,
+    /// The compiled subresource content filter, once compilation finishes.
+    filter: Rc<RefCell<Option<UserContentFilter>>>,
+    /// User content managers of created views, so the filter can be added once
+    /// it compiles (for views created before then).
+    ucms: Rc<RefCell<Vec<UserContentManager>>>,
 }
 
 impl WebKitEngine {
     /// Create the engine with default settings, the ad blocklist, and the
-    /// permission policy mirror. `debug` enables developer tools and console output.
+    /// permission policy mirror. Compiles a subresource content filter from the
+    /// blocklist asynchronously into `filter_store_dir`. `debug` enables
+    /// developer tools and console output.
     pub fn new(
         debug: bool,
         blocklist: Rc<HashSet<String>>,
         permissions: PermissionMirror,
+        filter_store_dir: &Path,
     ) -> Self {
+        let _ = std::fs::create_dir_all(filter_store_dir);
+        let store = UserContentFilterStore::new(&filter_store_dir.to_string_lossy());
+        let filter: Rc<RefCell<Option<UserContentFilter>>> = Rc::new(RefCell::new(None));
+        let ucms: Rc<RefCell<Vec<UserContentManager>>> = Rc::new(RefCell::new(Vec::new()));
+
+        let json = adblock::content_filter_json(&blocklist);
+        let bytes = glib::Bytes::from(json.as_bytes());
+        let filter_cb = filter.clone();
+        let ucms_cb = ucms.clone();
+        store.save(
+            "qbrsh-adblock",
+            &bytes,
+            None::<&gtk4::gio::Cancellable>,
+            move |result| match result {
+                Ok(compiled) => {
+                    for ucm in ucms_cb.borrow().iter() {
+                        ucm.add_filter(&compiled);
+                    }
+                    *filter_cb.borrow_mut() = Some(compiled);
+                }
+                Err(e) => eprintln!("[qbrsh] content filter compile failed: {e}"),
+            },
+        );
+
         Self {
             settings: default_settings(debug),
             session: NetworkSession::default().expect("default network session"),
             blocklist,
             permissions,
+            _filter_store: store,
+            filter,
+            ucms,
         }
     }
 
@@ -58,6 +97,15 @@ impl WebKitEngine {
             .build();
         view.set_vexpand(true);
         view.set_hexpand(true);
+
+        // Apply the subresource content filter (now if ready, else when it
+        // finishes compiling) and track this view's content manager.
+        if let Some(ucm) = view.user_content_manager() {
+            if let Some(compiled) = self.filter.borrow().as_ref() {
+                ucm.add_filter(compiled);
+            }
+            self.ucms.borrow_mut().push(ucm);
+        }
 
         connect_signals(
             &view,

@@ -301,7 +301,12 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let blocklist = std::rc::Rc::new(crate::adblock::load(&dir.join("adblock")));
     let permissions: PermissionMirror =
         std::rc::Rc::new(std::cell::RefCell::new(config.permissions.clone()));
-    let engine = WebKitEngine::new(false, blocklist, permissions.clone());
+    let engine = WebKitEngine::new(
+        false,
+        blocklist,
+        permissions.clone(),
+        &dir.join("content-filters"),
+    );
 
     let quickmarks_path = dir.join("quickmarks");
     let bookmarks_path = dir.join("bookmarks");

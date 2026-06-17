@@ -72,6 +72,24 @@ pub fn host_of(uri: &str) -> Option<&str> {
     if host.is_empty() { None } else { Some(host) }
 }
 
+/// Build a WebKit content-blocker rule list (JSON) from the blocklist, so the
+/// same domains are blocked at the subresource level (images, scripts, XHR),
+/// not only at navigation. Each rule blocks URLs whose host is, or is a
+/// subdomain of, a blocked domain.
+pub fn content_filter_json(blocklist: &HashSet<String>) -> String {
+    let rules: Vec<serde_json::Value> = blocklist
+        .iter()
+        .map(|domain| {
+            let escaped = domain.replace('.', r"\.");
+            serde_json::json!({
+                "trigger": { "url-filter": format!(r"https?://([^/]+\.)?{escaped}[:/]") },
+                "action": { "type": "block" }
+            })
+        })
+        .collect();
+    serde_json::to_string(&rules).unwrap_or_else(|_| "[]".to_string())
+}
+
 /// Whether `uri`'s host matches a blocked domain (exact or subdomain).
 pub fn is_blocked(uri: &str, blocklist: &HashSet<String>) -> bool {
     let Some(host) = host_of(uri) else {
@@ -95,6 +113,22 @@ mod tests {
         assert_eq!(host_of("https://ad.doubleclick.net/foo?x=1"), Some("ad.doubleclick.net"));
         assert_eq!(host_of("http://user@example.com:8080/p"), Some("example.com"));
         assert_eq!(host_of("about:blank"), None);
+    }
+
+    #[test]
+    fn content_filter_is_valid_json_rules() {
+        let set: HashSet<String> = ["doubleclick.net".to_string()].into_iter().collect();
+        let json = content_filter_json(&set);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["action"]["type"], "block");
+        assert!(
+            arr[0]["trigger"]["url-filter"]
+                .as_str()
+                .unwrap()
+                .contains(r"doubleclick\.net")
+        );
     }
 
     #[test]
