@@ -51,6 +51,8 @@ pub enum Command {
     Stop,
     /// Scroll the active page in a direction `count` steps.
     Scroll(ScrollDir, u32),
+    /// Scroll by a page (or half page) up or down.
+    ScrollPage { down: bool, half: bool },
     /// Scroll to a vertical percentage of the active page.
     ScrollToPercent(u8),
     /// Close the active tab.
@@ -75,4 +77,103 @@ pub enum Command {
     Quit,
     /// Do nothing (used to disable a default binding).
     Nop,
+}
+
+impl Command {
+    /// Parse a bare command string (no leading `:`) into a [`Command`].
+    ///
+    /// This covers the currently-implemented command set; the registry expands as
+    /// subsystems land. Returns an error message for unknown commands.
+    pub fn parse(input: &str) -> Result<Command, String> {
+        // `cmd-set-text` takes the rest of the line verbatim (spaces preserved).
+        if let Some(text) = input.strip_prefix("cmd-set-text ") {
+            return Ok(Command::SetCommandLine(text.to_string()));
+        }
+        if input.trim() == "cmd-set-text" {
+            return Ok(Command::SetCommandLine(String::new()));
+        }
+
+        let mut parts = input.split_whitespace();
+        let Some(name) = parts.next() else {
+            return Err("empty command".to_string());
+        };
+        let rest: Vec<&str> = parts.collect();
+        let arg = rest.join(" ");
+        let count = |default: u32| rest.first().and_then(|s| s.parse::<u32>().ok()).unwrap_or(default);
+
+        let cmd = match name {
+            "open" | "o" => Command::Open {
+                target: OpenTarget::Current,
+                input: arg,
+            },
+            "tabopen" | "t" => Command::Open {
+                target: OpenTarget::Tab,
+                input: arg,
+            },
+            "back" => Command::Back(count(1)),
+            "forward" => Command::Forward(count(1)),
+            "reload" | "r" => Command::Reload {
+                bypass_cache: rest.contains(&"--force"),
+            },
+            "stop" => Command::Stop,
+            "scroll" => Command::Scroll(parse_dir(rest.first())?, 1),
+            "scroll-page" => Command::ScrollPage {
+                down: matches!(rest.first(), Some(&"down")),
+                half: rest.contains(&"half"),
+            },
+            "scroll-to-perc" => Command::ScrollToPercent(count(100).min(100) as u8),
+            "tab-close" | "d" => Command::TabClose,
+            "tab-next" => Command::TabNext(count(1)),
+            "tab-prev" => Command::TabPrev(count(1)),
+            "tab-focus" | "tab-select" => {
+                let n = rest
+                    .first()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .ok_or_else(|| format!("tab-focus needs an index: {arg}"))?;
+                Command::TabSelect(n)
+            }
+            "mode-enter" => Command::ModeEnter(parse_mode(rest.first())?),
+            "mode-leave" => Command::ModeLeave,
+            "yank" => Command::Yank(match rest.first() {
+                None | Some(&"url") => YankWhat::Url,
+                Some(&"title") => YankWhat::Title,
+                Some(other) => return Err(format!("unknown yank target: {other}")),
+            }),
+            "quit" | "q" | "qa" => Command::Quit,
+            "nop" => Command::Nop,
+            other => return Err(format!("unknown command: {other}")),
+        };
+        Ok(cmd)
+    }
+
+    /// Apply a count prefix to the commands that honor one.
+    pub fn with_count(self, count: u32) -> Command {
+        match self {
+            Command::Scroll(dir, _) => Command::Scroll(dir, count),
+            Command::Back(_) => Command::Back(count),
+            Command::Forward(_) => Command::Forward(count),
+            Command::TabNext(_) => Command::TabNext(count),
+            Command::TabPrev(_) => Command::TabPrev(count),
+            other => other,
+        }
+    }
+}
+
+fn parse_dir(arg: Option<&&str>) -> Result<ScrollDir, String> {
+    match arg {
+        Some(&"up") => Ok(ScrollDir::Up),
+        Some(&"down") => Ok(ScrollDir::Down),
+        Some(&"left") => Ok(ScrollDir::Left),
+        Some(&"right") => Ok(ScrollDir::Right),
+        other => Err(format!("invalid scroll direction: {other:?}")),
+    }
+}
+
+fn parse_mode(arg: Option<&&str>) -> Result<Mode, String> {
+    match arg {
+        Some(&"normal") => Ok(Mode::Normal),
+        Some(&"insert") => Ok(Mode::Insert),
+        Some(&"command") => Ok(Mode::Command),
+        other => Err(format!("unknown mode: {other:?}")),
+    }
 }

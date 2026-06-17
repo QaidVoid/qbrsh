@@ -5,6 +5,7 @@
 //! [`crate::core::update::update`] is the only thing that interprets them.
 
 use crate::core::command::Command;
+use crate::core::key::Key;
 use crate::core::state::TabId;
 
 /// Correlates an asynchronous request (e.g. a JS evaluation) with its result.
@@ -35,6 +36,8 @@ pub enum JsPurpose {
 /// A single unit of change entering the core.
 #[derive(Debug, Clone)]
 pub enum Msg {
+    /// A raw key press (Normal-mode input), resolved against the binding trie.
+    Key(Key),
     /// A parsed command to execute.
     Command(Command),
     /// A load lifecycle transition for a tab.

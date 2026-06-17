@@ -13,9 +13,12 @@
 // this allowance is removed during the final cleanup once all sources exist.
 #![allow(dead_code)]
 
+pub mod bindings;
 pub mod command;
 pub mod effect;
+pub mod key;
 pub mod msg;
 pub mod runtime;
 pub mod state;
+pub mod trie;
 pub mod update;

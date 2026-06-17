@@ -8,7 +8,10 @@
 
 use std::collections::HashMap;
 
+use crate::core::bindings::default_bindings;
+use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, RequestId};
+use crate::core::trie::BindingTrie;
 
 /// Input modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,11 +187,10 @@ pub struct CommandLine {
     pub active: bool,
 }
 
-/// Pending key buffer for the input layer. Filled once the binding trie is
-/// ported; held here so all input state lives on the owned `State`.
+/// Pending key input: the partial key sequence and the count prefix.
 #[derive(Debug, Default)]
 pub struct InputState {
-    pub pending: String,
+    pub pending: Vec<Key>,
     pub count: String,
 }
 
@@ -222,6 +224,8 @@ pub struct State {
     pub command_line: CommandLine,
     pub status: StatusLine,
     pub config: Config,
+    /// Normal-mode key bindings.
+    pub bindings: BindingTrie,
     /// Purposes of in-flight JS evaluations, keyed by request id.
     pub pending_js: HashMap<RequestId, JsPurpose>,
     next_request_id: u64,
@@ -234,6 +238,7 @@ impl State {
     pub fn new(config: Config) -> Self {
         Self {
             config,
+            bindings: default_bindings(),
             running: true,
             ..Self::default()
         }

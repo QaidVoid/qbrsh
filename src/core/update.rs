@@ -7,12 +7,15 @@
 
 use crate::core::command::{Command, OpenTarget, ScrollDir, YankWhat};
 use crate::core::effect::{Effect, MessageLevel};
+use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
 use crate::core::state::{Mode, State};
+use crate::core::trie::TrieMatch;
 
 /// Apply a single message to the state and return the effects to perform.
 pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     match msg {
+        Msg::Key(key) => handle_key(state, key),
         Msg::Command(cmd) => handle_command(state, cmd),
 
         Msg::Load { tab, event } => {
@@ -134,6 +137,58 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     }
 }
 
+/// Resolve a Normal-mode key press: accumulate a count prefix, feed the binding
+/// trie, and dispatch the matched command.
+fn handle_key(state: &mut State, key: Key) -> Vec<Effect> {
+    if state.input.pending.is_empty() && key.is_count_digit() {
+        state.input.count.push_str(&key.sym);
+        return vec![Effect::RenderStatus];
+    }
+
+    state.input.pending.push(key);
+    match state.bindings.lookup(&state.input.pending) {
+        TrieMatch::Partial => vec![Effect::RenderStatus],
+        TrieMatch::None => {
+            state.input.pending.clear();
+            state.input.count.clear();
+            vec![Effect::RenderStatus]
+        }
+        // No partial-match timeout yet: an ambiguous prefix fires immediately.
+        TrieMatch::Exact(cmd) | TrieMatch::Ambiguous(cmd) => {
+            let count = state.input.count.parse::<u32>().ok().filter(|n| *n > 0);
+            state.input.pending.clear();
+            state.input.count.clear();
+            match Command::parse(&cmd) {
+                Ok(mut c) => {
+                    if let Some(n) = count {
+                        c = c.with_count(n);
+                    }
+                    let mut effects = handle_command(state, c);
+                    effects.push(Effect::RenderStatus);
+                    effects
+                }
+                Err(text) => vec![
+                    Effect::ShowMessage {
+                        level: MessageLevel::Error,
+                        text,
+                    },
+                    Effect::RenderStatus,
+                ],
+            }
+        }
+    }
+}
+
+/// Substitute command-line variables (`{url}`, `{title}`) from the active tab.
+fn substitute_vars(state: &State, text: &str) -> String {
+    let (url, title) = state
+        .tabs
+        .active()
+        .map(|t| (t.url.clone(), t.title.clone()))
+        .unwrap_or_default();
+    text.replace("{url}", &url).replace("{title}", &title)
+}
+
 fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
     match cmd {
         Command::Open { target, input } => {
@@ -162,6 +217,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
         Command::Stop => with_active(state, |tab| vec![Effect::Stop { tab }]),
 
         Command::Scroll(dir, count) => scroll(state, scroll_script(dir, count.max(1))),
+        Command::ScrollPage { down, half } => {
+            let frac = if half { 0.5 } else { 0.9 } * if down { 1.0 } else { -1.0 };
+            scroll(state, format!("window.scrollBy(0, window.innerHeight * {frac});"))
+        }
         Command::ScrollToPercent(pct) => scroll(
             state,
             format!(
@@ -230,9 +289,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             vec![Effect::RenderStatus]
         }
         Command::SetCommandLine(prefix) => {
+            let text = substitute_vars(state, &prefix);
             state.mode.enter(Mode::Command);
             state.command_line.active = true;
-            state.command_line.text = prefix;
+            state.command_line.text = text;
             vec![Effect::RenderStatus]
         }
         Command::Accept => {
@@ -240,13 +300,19 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.command_line.active = false;
             state.mode.leave();
             let mut effects = vec![Effect::RenderStatus];
-            match parse_command_line(&text) {
-                Some(inner) => effects.extend(handle_command(state, inner)),
-                None if text.trim().is_empty() => {}
-                None => effects.push(Effect::ShowMessage {
-                    level: MessageLevel::Error,
-                    text: format!("unknown command: {}", text.trim()),
-                }),
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return effects;
+            }
+            if let Some(rest) = trimmed.strip_prefix(':') {
+                push_parsed(state, rest.trim(), &mut effects);
+            } else if trimmed.starts_with('/') || trimmed.starts_with('?') {
+                effects.push(Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: "in-page search lands in a later milestone".to_string(),
+                });
+            } else {
+                push_parsed(state, trimmed, &mut effects);
             }
             effects
         }
@@ -366,47 +432,22 @@ fn normalize_target(input: &str) -> String {
     format!("https://duckduckgo.com/?q={}", t.replace(' ', "+"))
 }
 
-/// Parse a single command-line entry into a [`Command`].
-///
-/// A minimal mapping for the skeleton; the full registry/parser is ported with
-/// the command subsystem.
-fn parse_command_line(text: &str) -> Option<Command> {
-    let line = text.trim().trim_start_matches(':').trim();
-    if line.is_empty() {
-        return None;
+/// Parse a bare command string and either run it or report the error.
+fn push_parsed(state: &mut State, command: &str, effects: &mut Vec<Effect>) {
+    match Command::parse(command) {
+        Ok(inner) => effects.extend(handle_command(state, inner)),
+        Err(text) => effects.push(Effect::ShowMessage {
+            level: MessageLevel::Error,
+            text,
+        }),
     }
-    let (name, rest) = match line.split_once(char::is_whitespace) {
-        Some((n, r)) => (n, r.trim()),
-        None => (line, ""),
-    };
-    let cmd = match name {
-        "open" | "o" => Command::Open {
-            target: OpenTarget::Current,
-            input: rest.to_string(),
-        },
-        "tabopen" | "t" => Command::Open {
-            target: OpenTarget::Tab,
-            input: rest.to_string(),
-        },
-        "back" => Command::Back(1),
-        "forward" => Command::Forward(1),
-        "reload" | "r" => Command::Reload {
-            bypass_cache: false,
-        },
-        "stop" => Command::Stop,
-        "tabclose" | "d" => Command::TabClose,
-        "tabnext" => Command::TabNext(1),
-        "tabprev" => Command::TabPrev(1),
-        "quit" | "q" | "qa" => Command::Quit,
-        _ => return None,
-    };
-    Some(cmd)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::command::{Command, OpenTarget, ScrollDir};
+    use crate::core::key::Key;
     use crate::core::msg::{LoadEvent, RequestId};
     use crate::core::state::{Config, Mode, State};
 
@@ -416,6 +457,77 @@ mod tests {
         state.tabs.focus_last();
         assert_eq!(state.tabs.active_id(), Some(id));
         state
+    }
+
+    fn press(state: &mut State, sym: &str) -> Vec<Effect> {
+        update(state, Msg::Key(Key::plain(sym)))
+    }
+
+    #[test]
+    fn key_j_scrolls_down() {
+        let mut state = state_with_tab();
+        let effects = press(&mut state, "j");
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::EvalJs { script, .. } if script == "window.scrollBy(0, 60);"
+        )));
+        assert!(state.input.pending.is_empty());
+    }
+
+    #[test]
+    fn count_prefix_multiplies_scroll() {
+        let mut state = state_with_tab();
+        press(&mut state, "5");
+        assert_eq!(state.input.count, "5");
+        let effects = press(&mut state, "j");
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::EvalJs { script, .. } if script == "window.scrollBy(0, 300);"
+        )));
+        assert!(state.input.count.is_empty());
+    }
+
+    #[test]
+    fn multi_key_sequence_gg() {
+        let mut state = state_with_tab();
+        let first = press(&mut state, "g");
+        // `g` alone is only a prefix: no scroll yet.
+        assert!(!first.iter().any(|e| matches!(e, Effect::EvalJs { .. })));
+        assert_eq!(state.input.pending.len(), 1);
+        press(&mut state, "g");
+        assert!(state.input.pending.is_empty());
+    }
+
+    #[test]
+    fn unknown_key_clears_pending() {
+        let mut state = state_with_tab();
+        let effects = press(&mut state, "q");
+        assert!(state.input.pending.is_empty());
+        assert_eq!(effects, vec![Effect::RenderStatus]);
+    }
+
+    #[test]
+    fn key_colon_opens_command_line() {
+        let mut state = state_with_tab();
+        press(&mut state, ":");
+        assert_eq!(state.mode.current, Mode::Command);
+        assert!(state.command_line.active);
+        assert_eq!(state.command_line.text, ":");
+    }
+
+    #[test]
+    fn key_i_enters_insert_mode() {
+        let mut state = state_with_tab();
+        press(&mut state, "i");
+        assert_eq!(state.mode.current, Mode::Insert);
+    }
+
+    #[test]
+    fn open_url_binding_substitutes_current_url() {
+        let mut state = state_with_tab();
+        // `O` → cmd-set-text :open {url}
+        press(&mut state, "O");
+        assert_eq!(state.command_line.text, ":open https://example.com");
     }
 
     #[test]
