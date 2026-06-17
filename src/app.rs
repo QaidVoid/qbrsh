@@ -15,6 +15,7 @@ use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
 use crate::core::state::{Config, Mode, State, TabId};
 use crate::engine::traits::EngineView;
 use crate::engine::webkit::WebKitEngine;
+use crate::history::History;
 use crate::input;
 use crate::ui::window::Ui;
 
@@ -24,6 +25,7 @@ struct GtkEffectRunner {
     ui: Ui,
     engine: WebKitEngine,
     views: HashMap<TabId, Box<dyn EngineView>>,
+    history: History,
     mailbox: Mailbox,
 }
 
@@ -159,8 +161,8 @@ impl EffectRunner for GtkEffectRunner {
             Effect::SetClipboard(text) => {
                 self.ui.window.clipboard().set_text(&text);
             }
-            Effect::RecordHistory { .. } => {
-                // History persistence is wired in the storage subsystem (group 5).
+            Effect::RecordHistory { uri, title } => {
+                self.history.record(&uri, &title);
             }
             Effect::RenderStatus => self.render_status(state),
             Effect::RenderTabs => self.render_tabs(state),
@@ -170,6 +172,15 @@ impl EffectRunner for GtkEffectRunner {
             Effect::Quit => self.app.quit(),
         }
     }
+}
+
+/// Resolve the history database path under the XDG data directory.
+fn history_db_path() -> std::path::PathBuf {
+    let data_dir = directories::ProjectDirs::from("", "", "qbrsh")
+        .map(|p| p.data_dir().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let _ = std::fs::create_dir_all(&data_dir);
+    data_dir.join("history.db")
 }
 
 /// Build the window, seed the first tab, and start the dispatch loop.
@@ -190,11 +201,14 @@ pub fn run(app: &Application) {
     view.load_uri(&home);
     views.insert(id, view);
 
+    let history = History::open(&history_db_path());
+
     let mut runner = GtkEffectRunner {
         app: app.clone(),
         ui: ui.clone(),
         engine,
         views,
+        history,
         mailbox: mailbox.clone(),
     };
     runner.render_status(&state);

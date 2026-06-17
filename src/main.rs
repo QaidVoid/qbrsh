@@ -3,6 +3,7 @@
 mod app;
 mod core;
 mod engine;
+mod history;
 mod input;
 mod ui;
 
