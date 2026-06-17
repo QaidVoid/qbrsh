@@ -39,8 +39,15 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                         t.progress = 1.0;
                         let (uri, title) = (t.url.clone(), t.title.clone());
                         if !uri.is_empty() && uri != "about:blank" {
-                            effects.push(Effect::RecordHistory { uri, title });
+                            effects.push(Effect::RecordHistory {
+                                uri: uri.clone(),
+                                title,
+                            });
                         }
+                        effects.push(Effect::FireHook {
+                            event: "page_load".to_string(),
+                            arg: uri,
+                        });
                     }
                 }
             }
@@ -248,6 +255,12 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             }
             effects
         }
+
+        Msg::PluginMessage(text) => vec![Effect::ShowMessage {
+            level: MessageLevel::Info,
+            text,
+        }],
+        Msg::PluginEval(script) => fire_js(state, script),
 
         Msg::Crashed { tab } => {
             let mut effects = Vec::new();
@@ -632,7 +645,12 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                 return effects;
             }
             if let Some(rest) = trimmed.strip_prefix(':') {
-                push_parsed(state, rest.trim(), &mut effects);
+                let command = rest.trim();
+                push_parsed(state, command, &mut effects);
+                effects.push(Effect::FireHook {
+                    event: "command".to_string(),
+                    arg: command.to_string(),
+                });
             } else if trimmed.starts_with('/') || trimmed.starts_with('?') {
                 effects.push(Effect::ShowMessage {
                     level: MessageLevel::Info,
@@ -761,6 +779,7 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }],
         },
         Command::ConfigSource => vec![Effect::ReloadConfig],
+        Command::PluginReload => vec![Effect::ReloadPlugins],
         Command::DarkMode => {
             state.dark_mode = !state.dark_mode;
             let script = if state.dark_mode {
@@ -824,11 +843,17 @@ fn with_active(state: &State, f: impl FnOnce(crate::core::state::TabId) -> Vec<E
 /// Open a new tab in state and emit the effect to realize its web view.
 fn open_tab(state: &mut State, uri: String, background: bool) -> Vec<Effect> {
     let id = state.tabs.open(&uri);
-    let mut effects = vec![Effect::OpenTab {
-        id,
-        uri,
-        background,
-    }];
+    let mut effects = vec![
+        Effect::OpenTab {
+            id,
+            uri: uri.clone(),
+            background,
+        },
+        Effect::FireHook {
+            event: "tab_open".to_string(),
+            arg: uri,
+        },
+    ];
     if background {
         effects.push(Effect::RenderTabs);
     } else {

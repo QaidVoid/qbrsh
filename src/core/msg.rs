@@ -79,4 +79,8 @@ pub enum Msg {
     ConfigLoaded(Config),
     /// A session's tab URLs were loaded from disk.
     SessionLoaded(Vec<String>),
+    /// A plugin requested a status-bar message.
+    PluginMessage(String),
+    /// A plugin requested JavaScript evaluation in the active tab.
+    PluginEval(String),
 }

@@ -115,6 +115,8 @@ pub enum Command {
     SessionSave(String),
     /// Restore a named session's tabs.
     SessionLoad(String),
+    /// Recompile and reload all plugins.
+    PluginReload,
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -209,6 +211,7 @@ impl Command {
             "darkmode" => Command::DarkMode,
             "session-save" => Command::SessionSave(arg),
             "session-load" => Command::SessionLoad(arg),
+            "plugin-reload" => Command::PluginReload,
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -284,5 +287,6 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("darkmode", "Toggle web-content dark mode"),
     ("session-save", "Save the current tabs as a session"),
     ("session-load", "Restore a saved session"),
+    ("plugin-reload", "Recompile and reload plugins"),
     ("quit", "Quit the browser"),
 ];

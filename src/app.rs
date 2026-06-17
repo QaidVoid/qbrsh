@@ -20,6 +20,7 @@ use crate::engine::webkit::WebKitEngine;
 use crate::history::History;
 use crate::input;
 use crate::marks;
+use crate::plugin::PluginRuntime;
 use crate::ui::window::Ui;
 
 /// Executes effects against the GTK UI and the WebKit views.
@@ -29,6 +30,7 @@ struct GtkEffectRunner {
     engine: WebKitEngine,
     views: HashMap<TabId, Box<dyn EngineView>>,
     history: History,
+    plugins: PluginRuntime,
     css: gtk4::CssProvider,
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
@@ -235,6 +237,14 @@ impl EffectRunner for GtkEffectRunner {
                     .unwrap_or_default();
                 mailbox.send(Msg::SessionLoaded(urls));
             }
+            Effect::FireHook { event, arg } => self.plugins.fire(&event, &arg),
+            Effect::ReloadPlugins => {
+                self.plugins.reload();
+                self.ui.statusbar.set_text(&format!(
+                    "reloaded {} plugin(s)",
+                    self.plugins.count()
+                ));
+            }
             Effect::RecordHistory { uri, title } => {
                 self.history.record(&uri, &title);
             }
@@ -290,6 +300,7 @@ pub fn run(app: &Application) {
     views.insert(id, view);
 
     let history = History::open(&dir.join("history.db"), mailbox.clone());
+    let plugins = PluginRuntime::new(dir.join("plugins"), mailbox.clone());
 
     let css = gtk4::CssProvider::new();
     if let Some(display) = gdk4::Display::default() {
@@ -306,6 +317,7 @@ pub fn run(app: &Application) {
         engine,
         views,
         history,
+        plugins,
         css,
         quickmarks_path,
         bookmarks_path,

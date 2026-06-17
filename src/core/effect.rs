@@ -77,6 +77,10 @@ pub enum Effect {
     SaveSession { name: String, urls: Vec<String> },
     /// Load a named session; its URLs return as `Msg::SessionLoaded`.
     LoadSession { name: String },
+    /// Fire a cold-event plugin hook with a string argument.
+    FireHook { event: String, arg: String },
+    /// Recompile and reload all plugins.
+    ReloadPlugins,
     /// Display a transient message to the user.
     ShowMessage { level: MessageLevel, text: String },
     /// Tear down the application.

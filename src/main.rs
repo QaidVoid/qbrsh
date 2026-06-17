@@ -8,6 +8,7 @@ mod engine;
 mod history;
 mod input;
 mod marks;
+mod plugin;
 mod ui;
 
 use gtk4::prelude::*;
