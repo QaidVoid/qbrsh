@@ -44,6 +44,16 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                     }
                 }
             }
+            // Re-apply dark mode to the tab that just finished loading.
+            if event == LoadEvent::Finished && state.dark_mode {
+                let id = state.alloc_request_id();
+                effects.push(Effect::EvalJs {
+                    id,
+                    tab,
+                    script: DARK_APPLY_JS.to_string(),
+                    purpose: JsPurpose::FireAndForget,
+                });
+            }
             if state.tabs.active_id() == Some(tab) {
                 effects.push(Effect::RenderStatus);
             }
@@ -231,6 +241,14 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             ]
         }
 
+        Msg::SessionLoaded(urls) => {
+            let mut effects = Vec::new();
+            for url in urls {
+                effects.extend(open_tab(state, url, true));
+            }
+            effects
+        }
+
         Msg::Crashed { tab } => {
             let mut effects = Vec::new();
             if let Some(t) = state.tabs.get_mut(tab) {
@@ -293,6 +311,13 @@ fn handle_key(state: &mut State, key: Key) -> Vec<Effect> {
 
 /// Characters used to generate hint labels.
 const HINT_CHARS: &str = "asdfghjkl";
+
+/// Inject a dark-mode style that inverts the page and re-inverts media.
+const DARK_APPLY_JS: &str = "(function(){var s=document.getElementById('qbrsh-dark');if(!s){s=document.createElement('style');s.id='qbrsh-dark';s.textContent='html{filter:invert(1) hue-rotate(180deg) !important;background:#fff !important}img,video,iframe,canvas,[style*=\"background-image\"]{filter:invert(1) hue-rotate(180deg) !important}';(document.head||document.documentElement).appendChild(s);}})()";
+
+/// Remove the dark-mode style.
+const DARK_REMOVE_JS: &str =
+    "(function(){var s=document.getElementById('qbrsh-dark');if(s)s.remove();})()";
 
 /// Handle a key press while in hint mode: type into the label filter, follow a
 /// uniquely-matched hint, or remove a character.
@@ -736,6 +761,49 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }],
         },
         Command::ConfigSource => vec![Effect::ReloadConfig],
+        Command::DarkMode => {
+            state.dark_mode = !state.dark_mode;
+            let script = if state.dark_mode {
+                DARK_APPLY_JS
+            } else {
+                DARK_REMOVE_JS
+            };
+            let mut effects = fire_js(state, script.to_string());
+            effects.push(Effect::ShowMessage {
+                level: MessageLevel::Info,
+                text: format!("dark mode {}", if state.dark_mode { "on" } else { "off" }),
+            });
+            effects
+        }
+        Command::SessionSave(name) => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return vec![Effect::ShowMessage {
+                    level: MessageLevel::Error,
+                    text: "session name required".to_string(),
+                }];
+            }
+            vec![
+                Effect::SaveSession {
+                    urls: state.tabs.urls(),
+                    name: name.clone(),
+                },
+                Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: format!("session '{name}' saved"),
+                },
+            ]
+        }
+        Command::SessionLoad(name) => {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return vec![Effect::ShowMessage {
+                    level: MessageLevel::Error,
+                    text: "session name required".to_string(),
+                }];
+            }
+            vec![Effect::LoadSession { name }]
+        }
 
         Command::Quit => {
             state.running = false;
@@ -1388,6 +1456,44 @@ mod tests {
         let effects = update(&mut state, Msg::Command(Command::TabClose));
         assert!(!state.running);
         assert!(effects.contains(&Effect::Quit));
+    }
+
+    #[test]
+    fn darkmode_toggles() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::DarkMode));
+        assert!(state.dark_mode);
+        update(&mut state, Msg::Command(Command::DarkMode));
+        assert!(!state.dark_mode);
+    }
+
+    #[test]
+    fn session_save_emits_tab_urls() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::SessionSave("work".to_string())),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::SaveSession { name, urls }
+                if name == "work" && urls == &vec!["https://example.com".to_string()]
+        )));
+    }
+
+    #[test]
+    fn session_loaded_opens_tabs() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::SessionLoaded(vec!["https://a.test".to_string(), "https://b.test".to_string()]),
+        );
+        assert_eq!(state.tabs.len(), 3);
+        let opened = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::OpenTab { .. }))
+            .count();
+        assert_eq!(opened, 2);
     }
 
     #[test]

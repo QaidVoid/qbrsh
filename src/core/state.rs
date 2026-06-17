@@ -234,6 +234,11 @@ impl Tabs {
         self.undo_stack.pop()
     }
 
+    /// The URLs of all open tabs, in order.
+    pub fn urls(&self) -> Vec<String> {
+        self.tabs.iter().map(|t| t.url.clone()).collect()
+    }
+
     fn push_undo(&mut self, tab: &Tab) {
         self.undo_stack.push(ClosedTab {
             url: tab.url.clone(),
@@ -391,6 +396,8 @@ pub struct State {
     /// Purposes of in-flight JS evaluations, keyed by request id.
     pub pending_js: HashMap<RequestId, JsPurpose>,
     next_request_id: u64,
+    /// Whether web-content dark mode is active.
+    pub dark_mode: bool,
     /// Cleared to false to request shutdown.
     pub running: bool,
 }

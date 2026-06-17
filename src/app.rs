@@ -32,6 +32,7 @@ struct GtkEffectRunner {
     css: gtk4::CssProvider,
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
+    sessions_dir: PathBuf,
     mailbox: Mailbox,
 }
 
@@ -224,6 +225,16 @@ impl EffectRunner for GtkEffectRunner {
             }
             Effect::ApplyTheme => self.apply_theme(state),
             Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(config::load())),
+            Effect::SaveSession { name, urls } => {
+                let _ = std::fs::create_dir_all(&self.sessions_dir);
+                let _ = std::fs::write(self.sessions_dir.join(&name), urls.join("\n"));
+            }
+            Effect::LoadSession { name } => {
+                let urls = std::fs::read_to_string(self.sessions_dir.join(&name))
+                    .map(|s| s.lines().map(str::to_string).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                mailbox.send(Msg::SessionLoaded(urls));
+            }
             Effect::RecordHistory { uri, title } => {
                 self.history.record(&uri, &title);
             }
@@ -297,6 +308,7 @@ pub fn run(app: &Application) {
         css,
         quickmarks_path,
         bookmarks_path,
+        sessions_dir: dir.join("sessions"),
         mailbox: mailbox.clone(),
     };
     runner.apply_theme(&state);

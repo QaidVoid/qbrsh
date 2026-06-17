@@ -77,4 +77,6 @@ pub enum Msg {
     Crashed { tab: TabId },
     /// The configuration file was reloaded from disk.
     ConfigLoaded(Config),
+    /// A session's tab URLs were loaded from disk.
+    SessionLoaded(Vec<String>),
 }

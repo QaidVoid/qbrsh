@@ -63,6 +63,9 @@ pub fn default_bindings() -> BindingTrie {
     bind("b", "cmd-set-text :quickmark-load ");
     bind("gb", "cmd-set-text :bookmark-load ");
 
+    // Content
+    bind("td", "darkmode");
+
     // Mode switching
     bind("i", "mode-enter insert");
     bind("Escape", "mode-leave");

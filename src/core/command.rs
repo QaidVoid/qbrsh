@@ -109,6 +109,12 @@ pub enum Command {
     Set { key: String, value: String },
     /// Reload the configuration file.
     ConfigSource,
+    /// Toggle web-content dark mode.
+    DarkMode,
+    /// Save the current tabs as a named session.
+    SessionSave(String),
+    /// Restore a named session's tabs.
+    SessionLoad(String),
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -200,6 +206,9 @@ impl Command {
                 Command::Set { key, value }
             }
             "config-source" => Command::ConfigSource,
+            "darkmode" => Command::DarkMode,
+            "session-save" => Command::SessionSave(arg),
+            "session-load" => Command::SessionLoad(arg),
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -272,5 +281,8 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("bookmark-del", "Delete a bookmark"),
     ("set", "Set a configuration value"),
     ("config-source", "Reload the configuration file"),
+    ("darkmode", "Toggle web-content dark mode"),
+    ("session-save", "Save the current tabs as a session"),
+    ("session-load", "Restore a saved session"),
     ("quit", "Quit the browser"),
 ];

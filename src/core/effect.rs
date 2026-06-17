@@ -73,6 +73,10 @@ pub enum Effect {
     ApplyTheme,
     /// Reload the configuration file from disk.
     ReloadConfig,
+    /// Persist a named session's tab URLs.
+    SaveSession { name: String, urls: Vec<String> },
+    /// Load a named session; its URLs return as `Msg::SessionLoaded`.
+    LoadSession { name: String },
     /// Display a transient message to the user.
     ShowMessage { level: MessageLevel, text: String },
     /// Tear down the application.
