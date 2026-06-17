@@ -34,6 +34,11 @@ pub fn default_bindings() -> BindingTrie {
     bind("J", "tab-next");
     bind("K", "tab-prev");
     bind("d", "tab-close");
+    bind("u", "undo");
+    bind("gC", "tab-clone");
+    bind("gJ", "tab-move +1");
+    bind("gK", "tab-move -1");
+    bind("co", "tab-only");
     bind("t", "cmd-set-text :tabopen ");
     for i in 1..=9 {
         bind(&format!("<A-{i}>"), &format!("tab-focus {i}"));

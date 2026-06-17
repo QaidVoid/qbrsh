@@ -75,6 +75,14 @@ pub enum Command {
     TabPrev(u32),
     /// Focus the tab at a 1-based index.
     TabSelect(usize),
+    /// Reopen the most recently closed tab.
+    Undo,
+    /// Duplicate the active tab.
+    TabClone,
+    /// Move the active tab by a signed offset.
+    TabMove(i32),
+    /// Close all tabs except the active one.
+    TabOnly,
     /// Enter a specific input mode.
     ModeEnter(Mode),
     /// Leave the current mode, returning to Normal.
@@ -139,6 +147,14 @@ impl Command {
             "tab-close" | "d" => Command::TabClose,
             "tab-next" => Command::TabNext(count(1)),
             "tab-prev" => Command::TabPrev(count(1)),
+            "tab-clone" => Command::TabClone,
+            "tab-only" => Command::TabOnly,
+            "tab-move" => Command::TabMove(
+                rest.first()
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .ok_or_else(|| format!("tab-move needs an offset: {arg}"))?,
+            ),
+            "undo" => Command::Undo,
             "tab-focus" | "tab-select" => {
                 let n = rest
                     .first()

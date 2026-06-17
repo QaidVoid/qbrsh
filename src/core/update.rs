@@ -423,6 +423,36 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                 text: format!("no tab at index {index}"),
             }],
         },
+        Command::Undo => match state.tabs.undo() {
+            Some(closed) => open_tab(state, closed.url, false),
+            None => vec![Effect::ShowMessage {
+                level: MessageLevel::Info,
+                text: "no closed tabs to reopen".to_string(),
+            }],
+        },
+        Command::TabClone => match state.tabs.active().map(|t| t.url.clone()) {
+            Some(url) => open_tab(state, url, false),
+            None => Vec::new(),
+        },
+        Command::TabMove(delta) => {
+            if state.tabs.move_active(delta) {
+                vec![Effect::RenderTabs, Effect::RenderStatus]
+            } else {
+                Vec::new()
+            }
+        }
+        Command::TabOnly => {
+            let closed = state.tabs.close_others();
+            let mut effects: Vec<Effect> = closed
+                .into_iter()
+                .map(|tab| Effect::CloseTab { tab })
+                .collect();
+            if !effects.is_empty() {
+                effects.push(Effect::RenderTabs);
+                effects.push(Effect::RenderStatus);
+            }
+            effects
+        }
 
         Command::ModeEnter(mode) => {
             state.mode.enter(mode);
@@ -992,6 +1022,77 @@ mod tests {
             e,
             Effect::RecordHistory { uri, .. } if uri == "https://example.com"
         )));
+    }
+
+    #[test]
+    fn undo_reopens_closed_tab() {
+        let mut state = state_with_tab();
+        // Open a second tab, then close it.
+        update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::Tab,
+                input: "https://second.test".to_string(),
+            }),
+        );
+        assert_eq!(state.tabs.len(), 2);
+        update(&mut state, Msg::Command(Command::TabClose));
+        assert_eq!(state.tabs.len(), 1);
+        let effects = update(&mut state, Msg::Command(Command::Undo));
+        assert_eq!(state.tabs.len(), 2);
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenTab { uri, .. } if uri == "https://second.test"
+        )));
+    }
+
+    #[test]
+    fn tab_clone_duplicates_active_url() {
+        let mut state = state_with_tab();
+        let effects = update(&mut state, Msg::Command(Command::TabClone));
+        assert_eq!(state.tabs.len(), 2);
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenTab { uri, .. } if uri == "https://example.com"
+        )));
+    }
+
+    #[test]
+    fn tab_move_reorders() {
+        let mut state = state_with_tab();
+        update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::Tab,
+                input: "https://b.test".to_string(),
+            }),
+        );
+        // Active is now index 1 (the new tab). Move it left.
+        assert_eq!(state.tabs.active_index(), 1);
+        update(&mut state, Msg::Command(Command::TabMove(-1)));
+        assert_eq!(state.tabs.active_index(), 0);
+    }
+
+    #[test]
+    fn tab_only_closes_others() {
+        let mut state = state_with_tab();
+        for url in ["https://a.test", "https://b.test"] {
+            update(
+                &mut state,
+                Msg::Command(Command::Open {
+                    target: OpenTarget::Tab,
+                    input: url.to_string(),
+                }),
+            );
+        }
+        assert_eq!(state.tabs.len(), 3);
+        let effects = update(&mut state, Msg::Command(Command::TabOnly));
+        assert_eq!(state.tabs.len(), 1);
+        let closed = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::CloseTab { .. }))
+            .count();
+        assert_eq!(closed, 2);
     }
 
     #[test]

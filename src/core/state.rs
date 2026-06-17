@@ -85,12 +85,23 @@ impl Tab {
     }
 }
 
+/// A recently-closed tab, retained so it can be reopened with `undo`.
+#[derive(Debug, Clone)]
+pub struct ClosedTab {
+    pub url: String,
+    pub title: String,
+}
+
+/// Maximum number of closed tabs retained for undo.
+const UNDO_LIMIT: usize = 100;
+
 /// The ordered set of open tabs plus the active selection.
 #[derive(Debug, Default)]
 pub struct Tabs {
     tabs: Vec<Tab>,
     active: usize,
     next_id: u64,
+    undo_stack: Vec<ClosedTab>,
 }
 
 impl Tabs {
@@ -168,17 +179,68 @@ impl Tabs {
         self.active_id()
     }
 
-    /// Close the active tab. Returns its id and the id to focus next, if any.
+    /// Close the active tab, retaining it for undo. Returns its id and the id to
+    /// focus next, if any.
     pub fn close_active(&mut self) -> Option<(TabId, Option<TabId>)> {
         if self.tabs.is_empty() {
             return None;
         }
         let closed = self.tabs.remove(self.active);
+        self.push_undo(&closed);
         if self.active >= self.tabs.len() && !self.tabs.is_empty() {
             self.active = self.tabs.len() - 1;
         }
         let next = self.active_id();
         Some((closed.id, next))
+    }
+
+    /// Close all tabs except the active one, retaining them for undo. Returns the
+    /// ids of the closed tabs.
+    pub fn close_others(&mut self) -> Vec<TabId> {
+        if self.tabs.len() < 2 {
+            return Vec::new();
+        }
+        let kept = self.tabs.swap_remove(self.active);
+        let removed = std::mem::take(&mut self.tabs);
+        let closed_ids = removed.iter().map(|t| t.id).collect();
+        for tab in &removed {
+            self.push_undo(tab);
+        }
+        self.tabs = vec![kept];
+        self.active = 0;
+        closed_ids
+    }
+
+    /// Move the active tab by `delta` positions, clamped to the ends. Returns
+    /// true if the order changed.
+    pub fn move_active(&mut self, delta: i32) -> bool {
+        let len = self.tabs.len();
+        if len < 2 {
+            return false;
+        }
+        let target = (self.active as i32 + delta).clamp(0, len as i32 - 1) as usize;
+        if target == self.active {
+            return false;
+        }
+        let tab = self.tabs.remove(self.active);
+        self.tabs.insert(target, tab);
+        self.active = target;
+        true
+    }
+
+    /// Pop the most recently closed tab for reopening.
+    pub fn undo(&mut self) -> Option<ClosedTab> {
+        self.undo_stack.pop()
+    }
+
+    fn push_undo(&mut self, tab: &Tab) {
+        self.undo_stack.push(ClosedTab {
+            url: tab.url.clone(),
+            title: tab.title.clone(),
+        });
+        if self.undo_stack.len() > UNDO_LIMIT {
+            self.undo_stack.remove(0);
+        }
     }
 }
 
