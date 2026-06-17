@@ -90,7 +90,6 @@ impl Tab {
 #[derive(Debug, Clone)]
 pub struct ClosedTab {
     pub url: String,
-    pub title: String,
 }
 
 /// Maximum number of closed tabs retained for undo.
@@ -117,12 +116,6 @@ impl Tabs {
     /// Number of open tabs.
     pub fn len(&self) -> usize {
         self.tabs.len()
-    }
-
-    /// Whether there are no open tabs. Pairs with [`Tabs::len`]; consumed by the
-    /// UI layer.
-    pub fn is_empty(&self) -> bool {
-        self.tabs.is_empty()
     }
 
     /// The active tab, if any.
@@ -242,7 +235,6 @@ impl Tabs {
     fn push_undo(&mut self, tab: &Tab) {
         self.undo_stack.push(ClosedTab {
             url: tab.url.clone(),
-            title: tab.title.clone(),
         });
         if self.undo_stack.len() > UNDO_LIMIT {
             self.undo_stack.remove(0);
@@ -280,11 +272,6 @@ pub struct HintState {
 }
 
 impl HintState {
-    /// Labels that still match the typed prefix.
-    pub fn matching(&self) -> impl Iterator<Item = &String> {
-        self.labels.iter().filter(|l| l.starts_with(&self.input))
-    }
-
     /// Reset to an empty, inactive hint state.
     pub fn reset(&mut self) {
         self.labels.clear();

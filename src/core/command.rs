@@ -13,8 +13,6 @@ pub enum OpenTarget {
     Current,
     /// Open in a new foreground tab.
     Tab,
-    /// Open in a new background tab.
-    Background,
 }
 
 /// Scroll direction for a `scroll` command.

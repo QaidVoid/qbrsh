@@ -101,14 +101,16 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             effects
         }
 
-        Msg::JsResult { id, result, .. } => {
+        Msg::JsResult { id, tab, result } => {
             let Some(purpose) = state.pending_js.remove(&id) else {
                 return Vec::new();
             };
             match purpose {
                 JsPurpose::FireAndForget => Vec::new(),
                 JsPurpose::ReadScrollPercent => {
-                    if let Ok(text) = result
+                    // Only the active tab's scroll position belongs in the status bar.
+                    if state.tabs.active_id() == Some(tab)
+                        && let Ok(text) = result
                         && let Ok(pct) = text.trim().parse::<f64>()
                     {
                         state.status.scroll_percent = Some(pct.clamp(0.0, 100.0) as u8);
@@ -475,7 +477,6 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                     None => open_tab(state, uri, false),
                 },
                 OpenTarget::Tab => open_tab(state, uri, false),
-                OpenTarget::Background => open_tab(state, uri, true),
             }
         }
 

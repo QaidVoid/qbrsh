@@ -8,11 +8,6 @@
 //! messages. This keeps state mutation in one place, free of shared interior
 //! mutability and re-entrancy.
 
-// The core defines the complete Msg/Effect/Command vocabulary up front. Variants
-// for engine and input events are constructed as those subsystems are wired in;
-// this allowance is removed during the final cleanup once all sources exist.
-#![allow(dead_code)]
-
 pub mod bindings;
 pub mod command;
 pub mod completion;

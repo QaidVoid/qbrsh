@@ -56,50 +56,6 @@ pub fn dispatch<R: EffectRunner>(state: &mut State, runner: &mut R, mailbox: &Ma
     }
 }
 
-/// Owns state and a runner for synchronous draining (tests and non-async drivers).
-pub struct Runtime<R: EffectRunner> {
-    state: State,
-    mailbox: Mailbox,
-    rx: Receiver<Msg>,
-    runner: R,
-}
-
-impl<R: EffectRunner> Runtime<R> {
-    /// Create a runtime over the given initial state and effect runner.
-    pub fn new(state: State, runner: R) -> Self {
-        let (mailbox, rx) = Mailbox::channel();
-        Self {
-            state,
-            mailbox,
-            rx,
-            runner,
-        }
-    }
-
-    /// A handle for enqueuing messages from event sources.
-    pub fn mailbox(&self) -> Mailbox {
-        self.mailbox.clone()
-    }
-
-    /// Read-only access to the current state.
-    pub fn state(&self) -> &State {
-        &self.state
-    }
-
-    /// Whether the application is still running.
-    pub fn running(&self) -> bool {
-        self.state.running
-    }
-
-    /// Drain all currently-available messages, one at a time with exclusive
-    /// `&mut State`, including any enqueued by effects during this drain.
-    pub fn pump(&mut self) {
-        while let Ok(msg) = self.rx.try_recv() {
-            dispatch(&mut self.state, &mut self.runner, &self.mailbox, msg);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,11 +92,11 @@ mod tests {
         }
     }
 
-    fn runtime() -> Runtime<TestRunner> {
+    fn fixture() -> (State, TestRunner) {
         let mut state = State::new(Config::default());
         state.tabs.open("https://example.com");
         state.tabs.focus_last();
-        Runtime::new(
+        (
             state,
             TestRunner {
                 scroll_answer: Some("55".to_string()),
@@ -149,22 +105,30 @@ mod tests {
         )
     }
 
+    /// Drain all currently-available messages. This is the loop the GTK app runs.
+    fn drain(state: &mut State, runner: &mut TestRunner, mailbox: &Mailbox, rx: &Receiver<Msg>) {
+        while let Ok(msg) = rx.try_recv() {
+            dispatch(state, runner, mailbox, msg);
+        }
+    }
+
     #[test]
-    fn pump_processes_enqueued_command() {
-        let mut rt = runtime();
-        rt.mailbox().send(Msg::Command(Command::Quit));
-        rt.pump();
-        assert!(!rt.running());
-        assert!(rt.runner.seen.contains(&Effect::Quit));
+    fn dispatch_processes_enqueued_command() {
+        let (mut state, mut runner) = fixture();
+        let (mailbox, rx) = Mailbox::channel();
+        mailbox.send(Msg::Command(Command::Quit));
+        drain(&mut state, &mut runner, &mailbox, &rx);
+        assert!(!state.running);
+        assert!(runner.seen.contains(&Effect::Quit));
     }
 
     #[test]
     fn effect_enqueued_result_is_processed_in_same_drain() {
-        let mut rt = runtime();
-        rt.mailbox()
-            .send(Msg::Command(Command::Scroll(ScrollDir::Down, 1)));
-        rt.pump();
+        let (mut state, mut runner) = fixture();
+        let (mailbox, rx) = Mailbox::channel();
+        mailbox.send(Msg::Command(Command::Scroll(ScrollDir::Down, 1)));
+        drain(&mut state, &mut runner, &mailbox, &rx);
         // The runner answered the percent read; update consumed it and set status.
-        assert_eq!(rt.state().status.scroll_percent, Some(55));
+        assert_eq!(state.status.scroll_percent, Some(55));
     }
 }

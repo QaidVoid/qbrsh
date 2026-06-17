@@ -12,7 +12,6 @@ use crate::core::state::TabId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageLevel {
     Info,
-    Warning,
     Error,
 }
 
