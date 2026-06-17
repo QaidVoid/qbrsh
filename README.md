@@ -49,7 +49,10 @@ cargo run
 | `m` / `b` | save / load quickmark | `M` / `gb` | bookmark / load |
 | `td` | toggle dark mode | `co` | close other tabs |
 
-Counts work (e.g. `5j`). In command mode, `Tab`/`Shift-Tab` cycle completion.
+Counts work (e.g. `5j`). In command mode, `Tab`/`Shift-Tab` move the highlight
+through the completion list (your typed text stays in the command line), `Space`
+applies the highlighted item so you can continue with an argument, and `Enter`
+runs the highlighted item (or the typed text if none is selected).
 
 ## Commands
 
@@ -73,17 +76,27 @@ accent = "#ffd76e"
 [font]
 family = "monospace"
 size = 11
+
+[permissions]
+# Default policy for geolocation/notifications/media: ask, allow, or deny.
+# (ask currently falls back to deny: there is no prompt UI yet.)
+default = "deny"
+
+[permissions.sites]
+# Per-site overrides, matched by exact host or subdomain suffix.
+"example.com" = "allow"
 ```
 
-Change settings live with `:set colors.accent "#ff0000"` and reload the file
-with `:config-source`.
+Change settings live with `:set colors.accent "#ff0000"` or
+`:set permissions.example.com allow`, and reload the file with `:config-source`.
 
 ## Extensibility
 
 qbrsh does not run Firefox/Chrome extensions. Extensibility is native:
 
-- **Ad blocking**: built-in domain blocking (extend via
-  `~/.local/share/qbrsh/adblock`, one domain per line).
+- **Ad blocking**: built-in domain blocking, applied both at navigation (frames,
+  popups) and as a WebKit content filter for subresources (images, scripts,
+  XHR). Extend via `~/.local/share/qbrsh/adblock`, one domain per line.
 - **Plugins**: Rune scripts in `~/.local/share/qbrsh/plugins/*.rn`. See
   `examples/plugins/example.rn`. The `qbrsh` API: `command`, `open`, `message`,
   `eval_js(s).await` (suspends the plugin and returns the page result), and
@@ -91,4 +104,12 @@ qbrsh does not run Firefox/Chrome extensions. Extensibility is native:
   `command`). Plugins are sandboxed and run under an instruction budget. Reload
   with `:plugin-reload`.
 - **Automation**: drive the browser from an external process over the IPC
-  control interface (intended escape hatch for heavy/untrusted automation).
+  control interface, a JSON-RPC socket at `$XDG_RUNTIME_DIR/qbrsh/ipc.sock`.
+  Send newline-delimited requests, for example:
+
+  ```sh
+  printf '{"method":"run_command","params":{"command":"tabopen https://x"}}\n' \
+    | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/qbrsh/ipc.sock
+  ```
+
+  Launching `qbrsh <url>` while an instance is running forwards the URL to it.

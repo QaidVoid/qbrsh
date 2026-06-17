@@ -14,9 +14,9 @@
 //! round-trip the core uses for JS results.
 //!
 //! Escape hatch: for CPU-heavy or untrusted automation that should not run
-//! in-process, the intended path is an external program driving the browser over
-//! an IPC/JSON-RPC control interface (a separate surface from these plugins),
-//! rather than widening the in-process plugin API.
+//! in-process, drive the browser from an external program over the IPC/JSON-RPC
+//! control interface (see [`crate::ipc`]), rather than widening the in-process
+//! plugin API.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
