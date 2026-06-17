@@ -523,6 +523,16 @@ mod tests {
     }
 
     #[test]
+    fn input_focus_toggles_insert_mode() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        update(&mut state, Msg::InputFocusChanged { tab, focused: true });
+        assert_eq!(state.mode.current, Mode::Insert);
+        update(&mut state, Msg::InputFocusChanged { tab, focused: false });
+        assert_eq!(state.mode.current, Mode::Normal);
+    }
+
+    #[test]
     fn open_url_binding_substitutes_current_url() {
         let mut state = state_with_tab();
         // `O` → cmd-set-text :open {url}

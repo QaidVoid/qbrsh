@@ -6,7 +6,10 @@
 
 use gtk4::prelude::*;
 use webkit6::prelude::*;
-use webkit6::{HardwareAccelerationPolicy, NetworkSession, Settings, WebView};
+use webkit6::{
+    HardwareAccelerationPolicy, NetworkSession, Settings, UserContentInjectedFrames, UserScript,
+    UserScriptInjectionTime, WebView,
+};
 
 use crate::core::command::{Command, OpenTarget};
 use crate::core::msg::{LoadEvent, Msg};
@@ -89,6 +92,16 @@ fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox) {
         mb.send(Msg::Crashed { tab });
     });
 
+    // Show a styled error page when a load fails (but not when we cancelled it,
+    // e.g. a new-window request handed off to a tab).
+    view.connect_load_failed(|v, _event, uri, error| {
+        if error.matches(webkit6::NetworkError::Cancelled) {
+            return false;
+        }
+        v.load_html(&error_page_html(uri, &error.to_string()), Some(uri));
+        true
+    });
+
     // New-window requests (target=_blank, window.open) open a foreground tab.
     let mb = mailbox.clone();
     view.connect_create(move |_v, nav_action| {
@@ -100,6 +113,65 @@ fn connect_signals(view: &WebView, tab: TabId, mailbox: Mailbox) {
         }
         None
     });
+
+    // Auto-switch between Insert and Normal mode as editable elements gain or
+    // lose focus, via a content script that posts to a message handler.
+    let ucm = view
+        .user_content_manager()
+        .expect("web view has a user content manager");
+    ucm.add_script(&UserScript::new(
+        INSERT_MODE_DETECT_JS,
+        UserContentInjectedFrames::TopFrame,
+        UserScriptInjectionTime::End,
+        &[],
+        &[],
+    ));
+    ucm.register_script_message_handler("qbrshMode", None);
+    let mb = mailbox.clone();
+    ucm.connect_script_message_received(Some("qbrshMode"), move |_ucm, value| {
+        let focused = match value.to_str().as_str() {
+            "insert" => true,
+            "normal" => false,
+            _ => return,
+        };
+        mb.send(Msg::InputFocusChanged { tab, focused });
+    });
+}
+
+/// Content script that reports focus on editable elements for auto-insert-mode.
+const INSERT_MODE_DETECT_JS: &str = r#"(function(){
+  function editable(el){
+    if(!el) return false;
+    var t=(el.tagName||'').toLowerCase();
+    if(t==='input'){
+      var ty=(el.type||'text').toLowerCase();
+      return !['button','submit','reset','checkbox','radio','file','image','hidden','range','color'].includes(ty);
+    }
+    return t==='textarea'||t==='select'||el.isContentEditable;
+  }
+  document.addEventListener('focusin',function(e){if(editable(e.target))window.webkit.messageHandlers.qbrshMode.postMessage('insert');},true);
+  document.addEventListener('focusout',function(e){if(editable(e.target))window.webkit.messageHandlers.qbrshMode.postMessage('normal');},true);
+})();"#;
+
+/// Render a minimal error page for a failed load.
+fn error_page_html(uri: &str, error: &str) -> String {
+    let uri = html_escape(uri);
+    let error = html_escape(error);
+    format!(
+        r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Load failed</title>
+<style>body{{background:#1a1a2e;color:#e0e0e0;font-family:system-ui,sans-serif;text-align:center;padding:4em 2em}}
+h1{{color:#e06c75}}code{{background:#2a2a4a;padding:3px 8px;border-radius:4px;word-break:break-all}}
+.err{{color:#e5c07b;margin-top:1em}}.hint{{color:#888;margin-top:2.5em;font-size:.9em}}</style></head>
+<body><h1>Page load failed</h1><p><code>{uri}</code></p><p class="err">{error}</p>
+<p class="hint">Press <b>r</b> to retry or <b>H</b> to go back.</p></body></html>"#
+    )
+}
+
+/// Escape the few characters that matter when embedding text in HTML.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Shared WebKit settings for all views.
