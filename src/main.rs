@@ -1,6 +1,7 @@
 //! qbrsh: a fast, keyboard-driven web browser built on a hand-rolled TEA core.
 
 mod app;
+mod config;
 mod core;
 mod engine;
 mod history;

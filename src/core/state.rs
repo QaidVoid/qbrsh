@@ -294,17 +294,79 @@ pub struct Bookmark {
     pub title: String,
 }
 
-/// User configuration. Grows as the config subsystem is ported.
-#[derive(Debug, Clone)]
+/// Chrome colors (CSS color strings).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct Colors {
+    pub background: String,
+    pub foreground: String,
+    pub accent: String,
+}
+
+impl Default for Colors {
+    fn default() -> Self {
+        Self {
+            background: "#1a1a2e".to_string(),
+            foreground: "#e0e0e0".to_string(),
+            accent: "#ffd76e".to_string(),
+        }
+    }
+}
+
+/// Chrome font.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct Font {
+    pub family: String,
+    pub size: u32,
+}
+
+impl Default for Font {
+    fn default() -> Self {
+        Self {
+            family: "monospace".to_string(),
+            size: 11,
+        }
+    }
+}
+
+/// User configuration, deserialized from TOML and adjustable at runtime.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub homepage: String,
+    pub colors: Colors,
+    pub font: Font,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             homepage: "https://duckduckgo.com".to_string(),
+            colors: Colors::default(),
+            font: Font::default(),
         }
+    }
+}
+
+impl Config {
+    /// Set a configuration value by dotted key at runtime. Returns an error for
+    /// unknown keys or invalid values.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
+        match key {
+            "homepage" | "general.homepage" => self.homepage = value.to_string(),
+            "colors.background" => self.colors.background = value.to_string(),
+            "colors.foreground" => self.colors.foreground = value.to_string(),
+            "colors.accent" => self.colors.accent = value.to_string(),
+            "font.family" => self.font.family = value.to_string(),
+            "font.size" => {
+                self.font.size = value
+                    .parse()
+                    .map_err(|_| format!("invalid font.size: {value}"))?
+            }
+            _ => return Err(format!("unknown setting: {key}")),
+        }
+        Ok(())
     }
 }
 

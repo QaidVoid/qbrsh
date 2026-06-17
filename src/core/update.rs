@@ -220,6 +220,17 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             }
         }
 
+        Msg::ConfigLoaded(config) => {
+            state.config = config;
+            vec![
+                Effect::ApplyTheme,
+                Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: "config reloaded".to_string(),
+                },
+            ]
+        }
+
         Msg::Crashed { tab } => {
             let mut effects = Vec::new();
             if let Some(t) = state.tabs.get_mut(tab) {
@@ -710,6 +721,21 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                 Vec::new()
             }
         }
+
+        Command::Set { key, value } => match state.config.set(&key, &value) {
+            Ok(()) => vec![
+                Effect::ApplyTheme,
+                Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: format!("{key} = {value}"),
+                },
+            ],
+            Err(text) => vec![Effect::ShowMessage {
+                level: MessageLevel::Error,
+                text,
+            }],
+        },
+        Command::ConfigSource => vec![Effect::ReloadConfig],
 
         Command::Quit => {
             state.running = false;

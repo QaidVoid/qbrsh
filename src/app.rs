@@ -13,7 +13,8 @@ use gtk4::prelude::*;
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
-use crate::core::state::{Bookmark, Config, Mode, State, TabId};
+use crate::config;
+use crate::core::state::{Bookmark, Mode, State, TabId};
 use crate::engine::traits::EngineView;
 use crate::engine::webkit::WebKitEngine;
 use crate::history::History;
@@ -28,6 +29,7 @@ struct GtkEffectRunner {
     engine: WebKitEngine,
     views: HashMap<TabId, Box<dyn EngineView>>,
     history: History,
+    css: gtk4::CssProvider,
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
     mailbox: Mailbox,
@@ -81,6 +83,22 @@ impl GtkEffectRunner {
         } else {
             self.ui.commandline.set_visible(false);
         }
+    }
+
+    fn apply_theme(&self, state: &State) {
+        let c = &state.config;
+        let css = format!(
+            "#qbrsh-tabbar, #qbrsh-status, #qbrsh-cmd, #qbrsh-completion {{ \
+                background-color: {bg}; color: {fg}; \
+                font-family: {ff}; font-size: {fs}px; }}\n\
+             #qbrsh-tabbar, #qbrsh-status {{ padding: 2px 6px; }}\n\
+             #qbrsh-completion label {{ padding: 1px 6px; }}",
+            bg = c.colors.background,
+            fg = c.colors.foreground,
+            ff = c.font.family,
+            fs = c.font.size,
+        );
+        self.css.load_from_data(&css);
     }
 
     fn render_completion(&self, state: &State) {
@@ -204,6 +222,8 @@ impl EffectRunner for GtkEffectRunner {
             } => {
                 self.history.query(query, prefix, generation);
             }
+            Effect::ApplyTheme => self.apply_theme(state),
+            Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(config::load())),
             Effect::RecordHistory { uri, title } => {
                 self.history.record(&uri, &title);
             }
@@ -237,7 +257,7 @@ pub fn run(app: &Application) {
     let quickmarks_path = dir.join("quickmarks");
     let bookmarks_path = dir.join("bookmarks");
 
-    let mut state = State::new(Config::default());
+    let mut state = State::new(config::load());
     state.quickmarks = marks::load_quickmarks(&quickmarks_path)
         .into_iter()
         .collect();
@@ -259,16 +279,27 @@ pub fn run(app: &Application) {
 
     let history = History::open(&dir.join("history.db"), mailbox.clone());
 
+    let css = gtk4::CssProvider::new();
+    if let Some(display) = gdk4::Display::default() {
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &css,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+
     let mut runner = GtkEffectRunner {
         app: app.clone(),
         ui: ui.clone(),
         engine,
         views,
         history,
+        css,
         quickmarks_path,
         bookmarks_path,
         mailbox: mailbox.clone(),
     };
+    runner.apply_theme(&state);
     runner.render_status(&state);
     runner.render_tabs(&state);
 

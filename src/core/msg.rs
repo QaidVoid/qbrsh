@@ -6,7 +6,7 @@
 
 use crate::core::command::Command;
 use crate::core::key::Key;
-use crate::core::state::TabId;
+use crate::core::state::{Config, TabId};
 
 /// Correlates an asynchronous request (e.g. a JS evaluation) with its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -75,4 +75,6 @@ pub enum Msg {
     InputFocusChanged { tab: TabId, focused: bool },
     /// A tab's web content process terminated unexpectedly.
     Crashed { tab: TabId },
+    /// The configuration file was reloaded from disk.
+    ConfigLoaded(Config),
 }

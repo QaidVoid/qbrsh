@@ -28,6 +28,7 @@ impl Ui {
 
         let tabbar = Label::new(None);
         tabbar.set_xalign(0.0);
+        tabbar.set_widget_name("qbrsh-tabbar");
 
         let stack = Stack::new();
         stack.set_vexpand(true);
@@ -35,12 +36,15 @@ impl Ui {
 
         let statusbar = Label::new(None);
         statusbar.set_xalign(0.0);
+        statusbar.set_widget_name("qbrsh-status");
 
         let completion = GtkBox::new(Orientation::Vertical, 0);
         completion.set_visible(false);
+        completion.set_widget_name("qbrsh-completion");
 
         let commandline = Entry::new();
         commandline.set_visible(false);
+        commandline.set_widget_name("qbrsh-cmd");
 
         vbox.append(&tabbar);
         vbox.append(&stack);

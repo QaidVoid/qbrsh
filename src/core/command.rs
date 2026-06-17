@@ -105,6 +105,10 @@ pub enum Command {
     BookmarkLoad(String),
     /// Delete the bookmark with the given URL.
     BookmarkDel(String),
+    /// Set a configuration value at runtime (`:set key value`).
+    Set { key: String, value: String },
+    /// Reload the configuration file.
+    ConfigSource,
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -187,6 +191,15 @@ impl Command {
             "bookmark-add" => Command::BookmarkAdd,
             "bookmark-load" => Command::BookmarkLoad(arg),
             "bookmark-del" => Command::BookmarkDel(arg),
+            "set" => {
+                let key = rest
+                    .first()
+                    .ok_or_else(|| "set needs a key".to_string())?
+                    .to_string();
+                let value = rest[1..].join(" ");
+                Command::Set { key, value }
+            }
+            "config-source" => Command::ConfigSource,
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -257,5 +270,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("bookmark-add", "Bookmark the current page"),
     ("bookmark-load", "Open a bookmark"),
     ("bookmark-del", "Delete a bookmark"),
+    ("set", "Set a configuration value"),
+    ("config-source", "Reload the configuration file"),
     ("quit", "Quit the browser"),
 ];

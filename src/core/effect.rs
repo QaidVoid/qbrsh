@@ -69,6 +69,10 @@ pub enum Effect {
     RenderTabs,
     /// Re-render the completion popup from current state.
     RenderCompletion,
+    /// Apply the current theme (colors, font) to the chrome.
+    ApplyTheme,
+    /// Reload the configuration file from disk.
+    ReloadConfig,
     /// Display a transient message to the user.
     ShowMessage { level: MessageLevel, text: String },
     /// Tear down the application.
