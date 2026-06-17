@@ -32,14 +32,17 @@ pub struct CompletionState {
     /// Suppresses recompute for the one command-line change we cause when
     /// echoing a selection back into the entry.
     pub suppress: bool,
+    /// Incremented on every recompute so stale async results are discarded.
+    pub generation: u64,
 }
 
 impl CompletionState {
-    /// Clear all completion state.
+    /// Clear all completion state, invalidating any in-flight async results.
     pub fn reset(&mut self) {
         self.items.clear();
         self.selected = None;
         self.suppress = false;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Select the next candidate (wrapping); returns its command-line text.

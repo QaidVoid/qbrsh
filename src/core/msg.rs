@@ -64,6 +64,13 @@ pub enum Msg {
     CompletionNext,
     /// Select the previous completion candidate.
     CompletionPrev,
+    /// Asynchronous history completion results, tagged with the generation they
+    /// were requested for and the command-line prefix to apply.
+    HistoryCompletion {
+        generation: u64,
+        prefix: String,
+        entries: Vec<(String, String)>,
+    },
     /// An input element gained or lost focus in a tab (insert-mode auto switch).
     InputFocusChanged { tab: TabId, focused: bool },
     /// A tab's web content process terminated unexpectedly.

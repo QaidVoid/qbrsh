@@ -197,6 +197,13 @@ impl EffectRunner for GtkEffectRunner {
             Effect::SaveBookmarks(entries) => {
                 marks::save_bookmarks(&self.bookmarks_path, &entries);
             }
+            Effect::QueryHistory {
+                query,
+                prefix,
+                generation,
+            } => {
+                self.history.query(query, prefix, generation);
+            }
             Effect::RecordHistory { uri, title } => {
                 self.history.record(&uri, &title);
             }
@@ -250,7 +257,7 @@ pub fn run(app: &Application) {
     view.load_uri(&home);
     views.insert(id, view);
 
-    let history = History::open(&dir.join("history.db"));
+    let history = History::open(&dir.join("history.db"), mailbox.clone());
 
     let mut runner = GtkEffectRunner {
         app: app.clone(),

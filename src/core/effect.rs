@@ -55,6 +55,12 @@ pub enum Effect {
     SaveQuickmarks(Vec<(String, String)>),
     /// Persist the bookmarks (url, title) to disk.
     SaveBookmarks(Vec<(String, String)>),
+    /// Query history for command-line completion; results return as a message.
+    QueryHistory {
+        query: String,
+        prefix: String,
+        generation: u64,
+    },
     /// Record a visited page in history.
     RecordHistory { uri: String, title: String },
     /// Re-render the status bar from current state.

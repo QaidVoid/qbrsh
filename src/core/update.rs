@@ -6,7 +6,7 @@
 //! messages (see [`Msg::JsResult`]).
 
 use crate::core::command::{Command, HintTarget, OpenTarget, ScrollDir, YankWhat};
-use crate::core::completion::complete;
+use crate::core::completion::{CompletionItem, complete};
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
@@ -143,10 +143,13 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                 state.completion.suppress = false;
                 return Vec::new();
             }
+            state.completion.generation = state.completion.generation.wrapping_add(1);
             let items = complete(&state.command_line.text, state);
             state.completion.items = items;
             state.completion.selected = None;
-            vec![Effect::RenderCompletion]
+            let mut effects = vec![Effect::RenderCompletion];
+            effects.extend(history_query_effect(state));
+            effects
         }
         Msg::CompletionNext => match state.completion.next() {
             Some(command_line) => {
@@ -164,6 +167,39 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             }
             None => Vec::new(),
         },
+        Msg::HistoryCompletion {
+            generation,
+            prefix,
+            entries,
+        } => {
+            if generation != state.completion.generation {
+                return Vec::new();
+            }
+            for (url, title) in entries {
+                let command_line = format!("{prefix}{url}");
+                if state
+                    .completion
+                    .items
+                    .iter()
+                    .any(|i| i.command_line == command_line)
+                {
+                    continue;
+                }
+                let display = if title.is_empty() {
+                    url
+                } else {
+                    format!("{title}  {url}")
+                };
+                state
+                    .completion
+                    .items
+                    .push(CompletionItem {
+                        display,
+                        command_line,
+                    });
+            }
+            vec![Effect::RenderCompletion]
+        }
 
         Msg::InputFocusChanged { tab, focused } => {
             // Auto-switch insert mode only for the active tab and only in/out of
@@ -317,6 +353,21 @@ fn follow_hint(state: &mut State, label: &str) -> Vec<Effect> {
             ]
         }
     }
+}
+
+/// If the command line is completing an `open`/`tabopen` argument, build the
+/// effect that queries history for matching URLs.
+fn history_query_effect(state: &State) -> Option<Effect> {
+    let stripped = state.command_line.text.strip_prefix(':')?;
+    let (word, rest) = stripped.split_once(char::is_whitespace)?;
+    if !matches!(word, "open" | "o" | "tabopen" | "t") {
+        return None;
+    }
+    Some(Effect::QueryHistory {
+        query: rest.trim_start().to_string(),
+        prefix: format!(":{word} "),
+        generation: state.completion.generation,
+    })
 }
 
 /// Snapshot the quickmarks for persistence.
@@ -526,10 +577,13 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.mode.enter(Mode::Command);
             state.command_line.active = true;
             state.command_line.text = text;
+            state.completion.generation = state.completion.generation.wrapping_add(1);
             let items = complete(&state.command_line.text, state);
             state.completion.items = items;
             state.completion.selected = None;
-            vec![Effect::RenderStatus, Effect::RenderCompletion]
+            let mut effects = vec![Effect::RenderStatus, Effect::RenderCompletion];
+            effects.extend(history_query_effect(state));
+            effects
         }
         Command::Accept => {
             let text = std::mem::take(&mut state.command_line.text);
@@ -1231,6 +1285,45 @@ mod tests {
             .filter(|e| matches!(e, Effect::CloseTab { .. }))
             .count();
         assert_eq!(closed, 2);
+    }
+
+    #[test]
+    fn history_completion_merges_for_current_generation() {
+        let mut state = state_with_tab();
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine(":open ".to_string())),
+        );
+        let generation = state.completion.generation;
+        let effects = update(
+            &mut state,
+            Msg::HistoryCompletion {
+                generation,
+                prefix: ":open ".to_string(),
+                entries: vec![("https://github.com".to_string(), "GitHub".to_string())],
+            },
+        );
+        assert!(state.completion.items.iter().any(|i| i.command_line == ":open https://github.com"));
+        assert!(effects.contains(&Effect::RenderCompletion));
+    }
+
+    #[test]
+    fn stale_history_completion_is_ignored() {
+        let mut state = state_with_tab();
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine(":open ".to_string())),
+        );
+        let stale = state.completion.generation.wrapping_sub(1);
+        update(
+            &mut state,
+            Msg::HistoryCompletion {
+                generation: stale,
+                prefix: ":open ".to_string(),
+                entries: vec![("https://stale.test".to_string(), String::new())],
+            },
+        );
+        assert!(!state.completion.items.iter().any(|i| i.command_line.contains("stale")));
     }
 
     #[test]

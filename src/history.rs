@@ -12,8 +12,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, params};
 
+use crate::core::msg::Msg;
+use crate::core::runtime::Mailbox;
+
 enum Request {
-    Record { url: String, title: String },
+    Record {
+        url: String,
+        title: String,
+    },
+    /// Query history for completion; results return as `Msg::HistoryCompletion`.
+    Query {
+        query: String,
+        prefix: String,
+        generation: u64,
+    },
     Shutdown,
 }
 
@@ -24,8 +36,9 @@ pub struct History {
 }
 
 impl History {
-    /// Open (or create) the history database at `path` and start the writer thread.
-    pub fn open(path: &Path) -> History {
+    /// Open (or create) the history database at `path` and start the writer
+    /// thread. Query results are delivered to `mailbox`.
+    pub fn open(path: &Path, mailbox: Mailbox) -> History {
         let path = path.to_path_buf();
         let (tx, rx) = mpsc::channel::<Request>();
         let handle = thread::spawn(move || {
@@ -43,6 +56,18 @@ impl History {
                             eprintln!("[qbrsh] history: record failed: {e}");
                         }
                     }
+                    Request::Query {
+                        query,
+                        prefix,
+                        generation,
+                    } => {
+                        let entries = query_history(&conn, &query).unwrap_or_default();
+                        mailbox.send(Msg::HistoryCompletion {
+                            generation,
+                            prefix,
+                            entries,
+                        });
+                    }
                     Request::Shutdown => break,
                 }
             }
@@ -59,6 +84,18 @@ impl History {
             let _ = tx.send(Request::Record {
                 url: url.to_string(),
                 title: title.to_string(),
+            });
+        }
+    }
+
+    /// Query history for completion. Results arrive as `Msg::HistoryCompletion`
+    /// tagged with `generation` and `prefix`.
+    pub fn query(&self, query: String, prefix: String, generation: u64) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(Request::Query {
+                query,
+                prefix,
+                generation,
             });
         }
     }
@@ -111,6 +148,21 @@ fn record_visit(conn: &Connection, url: &str, title: &str) -> rusqlite::Result<(
         )?;
     }
     Ok(())
+}
+
+/// Return up to 20 history entries matching `query`, most-visited first.
+fn query_history(conn: &Connection, query: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    let like = format!("%{query}%");
+    let mut stmt = conn.prepare(
+        "SELECT url, title FROM history
+         WHERE url LIKE ?1 OR title LIKE ?1
+         ORDER BY visit_count DESC, last_visit DESC
+         LIMIT 20",
+    )?;
+    let rows = stmt.query_map(params![like], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    rows.collect()
 }
 
 #[cfg(test)]
