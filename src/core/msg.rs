@@ -64,6 +64,8 @@ pub enum Msg {
     CompletionNext,
     /// Select the previous completion candidate.
     CompletionPrev,
+    /// Commit the highlighted completion candidate into the command line.
+    CompletionApply,
     /// Asynchronous history completion results, tagged with the generation they
     /// were requested for and the command-line prefix to apply.
     HistoryCompletion {

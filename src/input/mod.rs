@@ -19,21 +19,32 @@ use crate::core::runtime::Mailbox;
 use crate::core::state::Mode;
 use crate::ui::window::Ui;
 
-/// Read-only view of the current mode for the controller's propagation decision.
-/// The dispatch loop writes it after each message; the controller reads it.
-pub type ModeMirror = Rc<Cell<Mode>>;
+/// Read-only view of the input state for the controller's synchronous
+/// propagation decision. The dispatch loop writes it after each message.
+#[derive(Clone, Copy)]
+pub struct UiView {
+    pub mode: Mode,
+    /// Whether a completion candidate is currently highlighted.
+    pub completion_active: bool,
+}
+
+/// Shared handle to the [`UiView`] read by the key controller.
+pub type ModeMirror = Rc<Cell<UiView>>;
 
 /// Install the key controller and command-line signal handlers.
 ///
-/// Returns the [`ModeMirror`] that the dispatch loop must keep in sync with
-/// `state.mode.current`.
+/// Returns the [`ModeMirror`] that the dispatch loop must keep in sync with the
+/// current mode and completion selection.
 pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
-    let mirror: ModeMirror = Rc::new(Cell::new(Mode::Normal));
+    let mirror: ModeMirror = Rc::new(Cell::new(UiView {
+        mode: Mode::Normal,
+        completion_active: false,
+    }));
 
     let controller = EventControllerKey::new();
     controller.set_propagation_phase(PropagationPhase::Capture);
     let mb = mailbox.clone();
-    let mode = mirror.clone();
+    let view = mirror.clone();
     controller.connect_key_pressed(move |_, keyval, _, mods| {
         let Some(key) = to_key(keyval, mods) else {
             return glib::Propagation::Proceed;
@@ -43,8 +54,10 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
             mb.send(Msg::Command(Command::ModeLeave));
             return glib::Propagation::Stop;
         }
-        match mode.get() {
-            // The command entry handles typing and Enter; Tab cycles completion.
+        let snapshot = view.get();
+        match snapshot.mode {
+            // The command entry handles typing and Enter; Tab cycles completion,
+            // and Space applies the highlighted candidate (else a literal space).
             Mode::Command => {
                 if key.sym == "Tab" && !key.ctrl && !key.alt {
                     mb.send(if key.shift {
@@ -52,6 +65,10 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
                     } else {
                         Msg::CompletionNext
                     });
+                    return glib::Propagation::Stop;
+                }
+                if key.sym == "space" && !key.ctrl && !key.alt && snapshot.completion_active {
+                    mb.send(Msg::CompletionApply);
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed

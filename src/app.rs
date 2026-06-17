@@ -373,7 +373,10 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     glib::MainContext::default().spawn_local(async move {
         while let Ok(msg) = rx.recv().await {
             dispatch(&mut state, &mut runner, &mailbox, msg);
-            mode_mirror.set(state.mode.current);
+            mode_mirror.set(input::UiView {
+                mode: state.mode.current,
+                completion_active: state.completion.selected.is_some(),
+            });
         }
     });
 }

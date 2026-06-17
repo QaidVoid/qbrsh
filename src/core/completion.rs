@@ -29,9 +29,9 @@ pub struct CompletionItem {
 pub struct CompletionState {
     pub items: Vec<CompletionItem>,
     pub selected: Option<usize>,
-    /// Suppresses recompute for the one command-line change we cause when
-    /// echoing a selection back into the entry.
-    pub suppress: bool,
+    /// The text the candidate list was computed from. Distinguishes a genuine
+    /// edit from the preview the cycling itself writes back into the entry.
+    pub query: String,
     /// Incremented on every recompute so stale async results are discarded.
     pub generation: u64,
 }
@@ -41,8 +41,15 @@ impl CompletionState {
     pub fn reset(&mut self) {
         self.items.clear();
         self.selected = None;
-        self.suppress = false;
+        self.query.clear();
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// The command-line text of the currently-highlighted item, if any.
+    pub fn preview(&self) -> Option<&str> {
+        self.selected
+            .and_then(|i| self.items.get(i))
+            .map(|item| item.command_line.as_str())
     }
 
     /// Select the next candidate (wrapping); returns its command-line text.

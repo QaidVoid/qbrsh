@@ -156,36 +156,41 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
         }
 
         Msg::CommandLineChanged(text) => {
-            state.command_line.text = text;
-            // Ignore the echo of a selection we applied ourselves.
-            if state.completion.suppress {
-                state.completion.suppress = false;
+            state.command_line.text = text.clone();
+            // Ignore echoes of the current query (e.g. a render re-setting the
+            // entry to the same text); only a genuine edit recomputes.
+            if text == state.completion.query {
                 return Vec::new();
             }
-            state.completion.generation = state.completion.generation.wrapping_add(1);
-            let items = complete(&state.command_line.text, state);
-            state.completion.items = items;
-            state.completion.selected = None;
-            let mut effects = vec![Effect::RenderCompletion];
-            effects.extend(history_query_effect(state));
+            recompute_completion(state, text)
+        }
+        // Tab/Shift-Tab move the highlight in the list only; the command line
+        // keeps the user's typed text (cycling, not completing).
+        Msg::CompletionNext => {
+            if state.completion.next().is_some() {
+                vec![Effect::RenderCompletion]
+            } else {
+                Vec::new()
+            }
+        }
+        Msg::CompletionPrev => {
+            if state.completion.prev().is_some() {
+                vec![Effect::RenderCompletion]
+            } else {
+                Vec::new()
+            }
+        }
+        Msg::CompletionApply => {
+            // Space commits the highlighted candidate into the command line
+            // (without executing) and recomputes for the next position.
+            let Some(committed) = state.completion.preview().map(str::to_string) else {
+                return Vec::new();
+            };
+            state.command_line.text = committed.clone();
+            let mut effects = vec![Effect::RenderStatus];
+            effects.extend(recompute_completion(state, committed));
             effects
         }
-        Msg::CompletionNext => match state.completion.next() {
-            Some(command_line) => {
-                state.command_line.text = command_line;
-                state.completion.suppress = true;
-                vec![Effect::RenderStatus, Effect::RenderCompletion]
-            }
-            None => Vec::new(),
-        },
-        Msg::CompletionPrev => match state.completion.prev() {
-            Some(command_line) => {
-                state.command_line.text = command_line;
-                state.completion.suppress = true;
-                vec![Effect::RenderStatus, Effect::RenderCompletion]
-            }
-            None => Vec::new(),
-        },
         Msg::HistoryCompletion {
             generation,
             prefix,
@@ -417,10 +422,22 @@ fn follow_hint(state: &mut State, label: &str) -> Vec<Effect> {
     }
 }
 
+/// Recompute the completion list from `query` and reset the selection.
+fn recompute_completion(state: &mut State, query: String) -> Vec<Effect> {
+    state.completion.query = query;
+    state.completion.selected = None;
+    state.completion.generation = state.completion.generation.wrapping_add(1);
+    let items = complete(&state.completion.query, state);
+    state.completion.items = items;
+    let mut effects = vec![Effect::RenderCompletion];
+    effects.extend(history_query_effect(state));
+    effects
+}
+
 /// If the command line is completing an `open`/`tabopen` argument, build the
 /// effect that queries history for matching URLs.
 fn history_query_effect(state: &State) -> Option<Effect> {
-    let stripped = state.command_line.text.strip_prefix(':')?;
+    let stripped = state.completion.query.strip_prefix(':')?;
     let (word, rest) = stripped.split_once(char::is_whitespace)?;
     if !matches!(word, "open" | "o" | "tabopen" | "t") {
         return None;
@@ -637,22 +654,25 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             let text = substitute_vars(state, &prefix);
             state.mode.enter(Mode::Command);
             state.command_line.active = true;
-            state.command_line.text = text;
-            state.completion.generation = state.completion.generation.wrapping_add(1);
-            let items = complete(&state.command_line.text, state);
-            state.completion.items = items;
-            state.completion.selected = None;
-            let mut effects = vec![Effect::RenderStatus, Effect::RenderCompletion];
-            effects.extend(history_query_effect(state));
+            state.command_line.text = text.clone();
+            let mut effects = vec![Effect::RenderStatus];
+            effects.extend(recompute_completion(state, text));
             effects
         }
         Command::Accept => {
-            let text = std::mem::take(&mut state.command_line.text);
+            // Execute the highlighted candidate if one is selected, else the
+            // typed text (the command line is not rewritten while cycling).
+            let typed = std::mem::take(&mut state.command_line.text);
+            let to_run = state
+                .completion
+                .preview()
+                .map(str::to_string)
+                .unwrap_or(typed);
             state.command_line.active = false;
             state.completion.reset();
             state.mode.leave();
             let mut effects = vec![Effect::RenderStatus, Effect::RenderCompletion];
-            let trimmed = text.trim();
+            let trimmed = to_run.trim();
             if trimmed.is_empty() {
                 return effects;
             }
@@ -1571,6 +1591,60 @@ mod tests {
             e,
             Effect::ResolvePluginEval { id: 7, result } if result == "hello"
         )));
+    }
+
+    #[test]
+    fn completion_tab_cycles_without_changing_command_line() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        let typed = state.command_line.text.clone();
+        let count = state.completion.items.len();
+        assert!(count > 1);
+        update(&mut state, Msg::CompletionNext);
+        assert_eq!(state.completion.selected, Some(0));
+        // The command line keeps the typed text; only the highlight moves.
+        assert_eq!(state.command_line.text, typed);
+        assert_eq!(state.completion.items.len(), count);
+        update(&mut state, Msg::CompletionNext);
+        assert_eq!(state.completion.selected, Some(1));
+        assert_eq!(state.command_line.text, typed);
+    }
+
+    #[test]
+    fn completion_enter_runs_highlighted_item() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        update(&mut state, Msg::CompletionNext); // highlight first command (open)
+        // Enter runs the highlighted command, not the typed ":".
+        let effects = update(&mut state, Msg::Command(Command::Accept));
+        assert!(effects.iter().any(|e| matches!(e, Effect::LoadUri { .. })));
+        // Accepting resets completion and leaves command mode.
+        assert!(state.completion.items.is_empty());
+        assert_eq!(state.mode.current, Mode::Normal);
+    }
+
+    #[test]
+    fn completion_edit_resets_selection() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        update(&mut state, Msg::CompletionNext);
+        assert_eq!(state.completion.selected, Some(0));
+        // A genuine edit recomputes and drops the selection.
+        update(&mut state, Msg::CommandLineChanged(":qui".to_string()));
+        assert_eq!(state.completion.selected, None);
+        assert!(state.completion.items.iter().any(|i| i.command_line == ":quit "));
+    }
+
+    #[test]
+    fn completion_space_applies_selection() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        update(&mut state, Msg::CompletionNext); // highlight first command (open)
+        let chosen = state.completion.preview().unwrap().to_string();
+        update(&mut state, Msg::CompletionApply);
+        assert_eq!(state.completion.selected, None);
+        assert_eq!(state.completion.query, chosen);
+        assert_eq!(state.command_line.text, chosen);
     }
 
     #[test]
