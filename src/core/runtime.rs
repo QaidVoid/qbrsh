@@ -1,76 +1,77 @@
-//! The message queue and single-consumer dispatch loop.
+//! The message queue and dispatch.
 //!
-//! A [`Runtime`] owns the sole [`State`] and a [`Mailbox`]. Every source of
-//! change enqueues a [`Msg`] on the mailbox; [`Runtime::pump`] drains them one at
-//! a time, applying each through [`update`] and handing the resulting effects to
-//! an [`EffectRunner`]. Because mutation happens only inside the drain, no two
-//! mutations overlap and there is no re-entrancy: an effect that would trigger
-//! more work enqueues new messages rather than re-entering `update`.
+//! Every source of change enqueues a [`Msg`] on a [`Mailbox`]. A single consumer
+//! drains the queue, applying each message through [`update`] and handing the
+//! resulting effects to an [`EffectRunner`]. Mutation happens only in the drain,
+//! so no two mutations overlap and there is no re-entrancy: an effect that needs
+//! more work enqueues a new message rather than re-entering `update`.
 //!
-//! The mailbox uses interior mutability for the *queue*, not for application
-//! state. The queue is single-threaded here; the worker-thread bridge that feeds
-//! it from other threads is added with the async/worker subsystem.
+//! The queue is an `async-channel`. The GTK app drives [`dispatch`] from an
+//! `async-channel` consumer task on the glib main context, which owns `State`
+//! exclusively; the synchronous [`Runtime::pump`] drains the same channel for
+//! tests and any non-async driver.
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::rc::Rc;
+use async_channel::{Receiver, Sender};
 
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::state::State;
 use crate::core::update::update;
 
-/// A cloneable handle for enqueuing messages onto the runtime's queue.
-#[derive(Clone, Default)]
+/// A cloneable handle for enqueuing messages onto the queue.
+#[derive(Clone)]
 pub struct Mailbox {
-    queue: Rc<RefCell<VecDeque<Msg>>>,
+    tx: Sender<Msg>,
 }
 
 impl Mailbox {
-    /// Create an empty mailbox.
-    pub fn new() -> Self {
-        Self::default()
+    /// Create a mailbox and its paired receiver.
+    pub fn channel() -> (Mailbox, Receiver<Msg>) {
+        let (tx, rx) = async_channel::unbounded();
+        (Mailbox { tx }, rx)
     }
 
-    /// Enqueue a message for the dispatch loop.
+    /// Enqueue a message. Never blocks; the channel is unbounded.
     pub fn send(&self, msg: Msg) {
-        self.queue.borrow_mut().push_back(msg);
-    }
-
-    /// Remove the next message, if any.
-    fn pop(&self) -> Option<Msg> {
-        self.queue.borrow_mut().pop_front()
-    }
-
-    /// Whether the queue currently holds messages.
-    pub fn has_pending(&self) -> bool {
-        !self.queue.borrow().is_empty()
+        let _ = self.tx.try_send(msg);
     }
 }
 
 /// Executes effects produced by [`update`].
 ///
-/// Implementors carry out side effects (engine calls, UI rendering, clipboard,
-/// etc.) and may enqueue follow-up messages through the provided [`Mailbox`] —
-/// for example, delivering an async JS result back as [`Msg::JsResult`].
+/// Implementors carry out side effects (engine calls, UI rendering, clipboard)
+/// and may enqueue follow-up messages through `mailbox`, for example delivering
+/// an async JS result back as [`Msg::JsResult`]. `state` is the post-update state
+/// so render effects read current values.
 pub trait EffectRunner {
-    /// Perform a single effect, using `mailbox` to report any asynchronous result.
-    fn run(&mut self, effect: Effect, mailbox: &Mailbox);
+    /// Perform a single effect.
+    fn run(&mut self, effect: Effect, state: &State, mailbox: &Mailbox);
 }
 
-/// Owns the application state and drives the message loop.
+/// Apply one message and run its effects.
+pub fn dispatch<R: EffectRunner>(state: &mut State, runner: &mut R, mailbox: &Mailbox, msg: Msg) {
+    let effects = update(state, msg);
+    for effect in effects {
+        runner.run(effect, state, mailbox);
+    }
+}
+
+/// Owns state and a runner for synchronous draining (tests and non-async drivers).
 pub struct Runtime<R: EffectRunner> {
     state: State,
     mailbox: Mailbox,
+    rx: Receiver<Msg>,
     runner: R,
 }
 
 impl<R: EffectRunner> Runtime<R> {
     /// Create a runtime over the given initial state and effect runner.
     pub fn new(state: State, runner: R) -> Self {
+        let (mailbox, rx) = Mailbox::channel();
         Self {
             state,
-            mailbox: Mailbox::new(),
+            mailbox,
+            rx,
             runner,
         }
     }
@@ -90,15 +91,11 @@ impl<R: EffectRunner> Runtime<R> {
         self.state.running
     }
 
-    /// Drain all currently-queued messages, including any enqueued by effects
-    /// during this drain. Each message is applied with exclusive `&mut State`,
-    /// one at a time.
+    /// Drain all currently-available messages, one at a time with exclusive
+    /// `&mut State`, including any enqueued by effects during this drain.
     pub fn pump(&mut self) {
-        while let Some(msg) = self.mailbox.pop() {
-            let effects = update(&mut self.state, msg);
-            for effect in effects {
-                self.runner.run(effect, &self.mailbox);
-            }
+        while let Ok(msg) = self.rx.try_recv() {
+            dispatch(&mut self.state, &mut self.runner, &self.mailbox, msg);
         }
     }
 }
@@ -120,7 +117,7 @@ mod tests {
     }
 
     impl EffectRunner for TestRunner {
-        fn run(&mut self, effect: Effect, mailbox: &Mailbox) {
+        fn run(&mut self, effect: Effect, _state: &State, mailbox: &Mailbox) {
             if let Effect::EvalJs {
                 id,
                 tab,
@@ -169,16 +166,5 @@ mod tests {
         rt.pump();
         // The runner answered the percent read; update consumed it and set status.
         assert_eq!(rt.state().status.scroll_percent, Some(55));
-        assert!(!rt.mailbox().has_pending());
-    }
-
-    #[test]
-    fn messages_drain_to_empty() {
-        let mut rt = runtime();
-        let mb = rt.mailbox();
-        mb.send(Msg::Command(Command::Scroll(ScrollDir::Down, 1)));
-        mb.send(Msg::Command(Command::Scroll(ScrollDir::Up, 1)));
-        rt.pump();
-        assert!(!mb.has_pending());
     }
 }
