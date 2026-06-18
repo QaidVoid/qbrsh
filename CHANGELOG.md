@@ -1,4 +1,16 @@
 
+## 0.2.0 — 2026-06-18
+
+### Bug Fixes
+
+- **security:** Per-site process isolation and IPC hardening
+
+### Features
+
+- **find:** In-page find with match count
+- **browser:** Find-in-page, downloads, and page zoom
+- **permissions:** Interactive prompt and per-site management
+
 ## 0.1.0 — 2026-06-17
 
 ### Bug Fixes
