@@ -78,15 +78,11 @@ pub enum Effect {
     ResolvePermission { id: u64, allow: bool },
     /// Set a tab's page zoom level.
     SetZoom { tab: TabId, level: f64 },
-    /// Search a tab's page for `text` in the given direction.
-    Find {
-        tab: TabId,
-        text: String,
-        forward: bool,
-    },
-    /// Move to the next in-page match in the search direction.
+    /// Search a tab's page for `text`, moving to the first match.
+    Find { tab: TabId, text: String },
+    /// Move to the next in-page match, wrapping at the end.
     FindNext { tab: TabId },
-    /// Move to the previous in-page match (opposite direction).
+    /// Move to the previous in-page match (best-effort; see `EngineView`).
     FindPrev { tab: TabId },
     /// Clear the in-page search highlight.
     FindClear { tab: TabId },

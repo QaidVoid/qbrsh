@@ -33,6 +33,11 @@ use super::traits::EngineView;
 /// Shared, runtime-updatable permission policy read by the permission handler.
 pub type PermissionMirror = Rc<RefCell<Permissions>>;
 
+/// Upper bound on in-page matches counted/highlighted per search. Capped rather
+/// than unbounded because an unbounded limit has crashed WebKit's find
+/// controller on pages with very many matches.
+const MAX_FIND_MATCHES: u32 = 1000;
+
 /// Registry of created views, each weakly held and tagged with its creation-time
 /// site key for same-site web-process grouping.
 type ViewRegistry = Rc<RefCell<Vec<(Option<String>, glib::object::WeakRef<WebView>)>>>;
@@ -317,10 +322,12 @@ fn connect_signals(
         true
     });
 
-    // Report in-page search results (match count, or zero for no matches).
+    // Report in-page search results. The total comes from the dedicated
+    // counting pass (counted-matches); found-text only confirms a hit and its
+    // count is unreliable, so it is not used for the total.
     if let Some(fc) = view.find_controller() {
         let mb = mailbox.clone();
-        fc.connect_found_text(move |_fc, count| {
+        fc.connect_counted_matches(move |_fc, count| {
             mb.send(Msg::FindResult { tab, matches: count });
         });
         let mb = mailbox.clone();
@@ -582,13 +589,16 @@ impl EngineView for WebKitView {
         self.view.set_zoom_level(level);
     }
 
-    fn find(&self, text: &str, forward: bool) {
+    fn find(&self, text: &str) {
         if let Some(fc) = self.view.find_controller() {
-            let mut opts = FindOptions::CASE_INSENSITIVE | FindOptions::WRAP_AROUND;
-            if !forward {
-                opts |= FindOptions::BACKWARDS;
-            }
-            fc.search(text, opts.bits(), u32::MAX);
+            // Always forward with wraparound. Backward search (the BACKWARDS
+            // option and search_previous) corrupts the find controller's heap in
+            // this WebKitGTK version, so it is not used; `n` wraps, keeping every
+            // match reachable. Count first so the search options stay active, and
+            // cap the match limit since an unbounded limit has also crashed it.
+            let opts = (FindOptions::CASE_INSENSITIVE | FindOptions::WRAP_AROUND).bits();
+            fc.count_matches(text, FindOptions::CASE_INSENSITIVE.bits(), MAX_FIND_MATCHES);
+            fc.search(text, opts, MAX_FIND_MATCHES);
         }
     }
 
@@ -599,6 +609,10 @@ impl EngineView for WebKitView {
     }
 
     fn find_previous(&self) {
+        // Best-effort backward step. WebKit's search_previous cannot reach
+        // hidden/collapsed content and corrupts the find controller's heap
+        // (surfacing as a harmless error at process exit); kept because forward
+        // wraparound alone makes reverse navigation tedious. See trait docs.
         if let Some(fc) = self.view.find_controller() {
             fc.search_previous();
         }

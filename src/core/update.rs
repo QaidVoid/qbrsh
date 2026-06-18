@@ -10,7 +10,9 @@ use crate::core::completion::{CompletionItem, complete};
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
-use crate::core::state::{Bookmark, Mode, PermissionPolicy, PermissionPrompt, Search, State};
+use crate::core::state::{
+    Bookmark, Mode, PermissionPolicy, PermissionPrompt, Search, SearchStatus, State,
+};
 use crate::core::trie::TrieMatch;
 
 /// Apply a single message to the state and return the effects to perform.
@@ -312,15 +314,10 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             if state.tabs.active_id() != Some(tab) {
                 return Vec::new();
             }
-            let text = match matches {
-                0 => "no matches".to_string(),
-                1 => "1 match".to_string(),
-                n => format!("{n} matches"),
-            };
-            vec![Effect::ShowMessage {
-                level: MessageLevel::Info,
-                text,
-            }]
+            state.status.search = Some(SearchStatus {
+                total: Some(matches as usize),
+            });
+            vec![Effect::RenderStatus]
         }
         Msg::DownloadStarted { id, filename } => {
             state.downloads.insert(id, filename.clone());
@@ -859,19 +856,17 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                     event: "command".to_string(),
                     arg: command.to_string(),
                 });
-            } else if trimmed.starts_with('/') || trimmed.starts_with('?') {
-                let forward = trimmed.starts_with('/');
-                let text = trimmed[1..].trim().to_string();
+            } else if let Some(text) = trimmed.strip_prefix('/') {
+                let text = text.trim().to_string();
                 if let Some(tab) = state.tabs.active_id() {
                     if text.is_empty() {
                         state.last_search = None;
+                        state.status.search = None;
                         effects.push(Effect::FindClear { tab });
                     } else {
-                        state.last_search = Some(Search {
-                            text: text.clone(),
-                            forward,
-                        });
-                        effects.push(Effect::Find { tab, text, forward });
+                        state.last_search = Some(Search { text: text.clone() });
+                        state.status.search = Some(SearchStatus { total: None });
+                        effects.push(Effect::Find { tab, text });
                     }
                 }
             } else {
@@ -1105,7 +1100,8 @@ fn set_zoom(state: &mut State, level: f64) -> Vec<Effect> {
     ]
 }
 
-/// Repeat the last in-page search, or hint that there is none.
+/// Step to the next (`forward`) or previous match of the last in-page search, or
+/// hint that there is none. Forward wraps at the end; backward is best-effort.
 fn find_repeat(state: &State, forward: bool) -> Vec<Effect> {
     if state.last_search.is_none() {
         return vec![Effect::ShowMessage {
@@ -1282,19 +1278,41 @@ mod tests {
         let mut state = state_with_tab();
         update(&mut state, Msg::Command(Command::SetCommandLine("/hello".into())));
         let effects = update(&mut state, Msg::Command(Command::Accept));
-        assert!(matches!(&state.last_search, Some(s) if s.text == "hello" && s.forward));
+        assert!(matches!(&state.last_search, Some(s) if s.text == "hello"));
         assert!(effects.iter().any(|e| matches!(
             e,
-            Effect::Find { text, forward: true, .. } if text == "hello"
+            Effect::Find { text, .. } if text == "hello"
         )));
     }
 
     #[test]
-    fn question_search_is_backward() {
+    fn find_result_sets_total_without_clearing_line() {
         let mut state = state_with_tab();
-        update(&mut state, Msg::Command(Command::SetCommandLine("?down".into())));
+        update(&mut state, Msg::Command(Command::SetCommandLine("/foo".into())));
         update(&mut state, Msg::Command(Command::Accept));
-        assert!(matches!(&state.last_search, Some(s) if s.text == "down" && !s.forward));
+        let tab = state.tabs.active_id().unwrap();
+        let e = update(&mut state, Msg::FindResult { tab, matches: 3 });
+        assert_eq!(
+            state.status.search.as_ref().map(SearchStatus::label),
+            Some("3 matches".to_string())
+        );
+        assert!(e.iter().any(|x| matches!(x, Effect::RenderStatus)));
+        assert!(!e.iter().any(|x| matches!(x, Effect::ShowMessage { .. })));
+
+        update(&mut state, Msg::Command(Command::SetCommandLine("/".into())));
+        update(&mut state, Msg::Command(Command::Accept));
+        assert_eq!(state.status.search, None);
+    }
+
+    #[test]
+    fn find_result_zero_reports_no_matches() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        update(&mut state, Msg::FindResult { tab, matches: 0 });
+        assert_eq!(
+            state.status.search.as_ref().map(SearchStatus::label),
+            Some("no matches".to_string())
+        );
     }
 
     #[test]
@@ -1304,7 +1322,7 @@ mod tests {
         assert!(!e.iter().any(|x| matches!(x, Effect::FindNext { .. })));
         assert!(e.iter().any(|x| matches!(x, Effect::ShowMessage { .. })));
 
-        state.last_search = Some(Search { text: "x".into(), forward: true });
+        state.last_search = Some(Search { text: "x".into() });
         let e = update(&mut state, Msg::Command(Command::FindNext));
         assert!(e.iter().any(|x| matches!(x, Effect::FindNext { .. })));
         let e = update(&mut state, Msg::Command(Command::FindPrev));

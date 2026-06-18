@@ -272,6 +272,28 @@ pub struct InputState {
 #[derive(Debug, Default)]
 pub struct StatusLine {
     pub scroll_percent: Option<u8>,
+    /// Current in-page search position, shown until cleared.
+    pub search: Option<SearchStatus>,
+}
+
+/// In-page search result for the status line: the total match count, or `None`
+/// before the count arrives. WebKit's native find does not expose a reliable
+/// current-match index, so only the total is shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchStatus {
+    pub total: Option<usize>,
+}
+
+impl SearchStatus {
+    /// Format as `N matches`, `searching` before the count, or `no matches`.
+    pub fn label(&self) -> String {
+        match self.total {
+            None => "searching".to_string(),
+            Some(0) => "no matches".to_string(),
+            Some(1) => "1 match".to_string(),
+            Some(n) => format!("{n} matches"),
+        }
+    }
 }
 
 /// Active hint-mode state: the follow action, the available labels, and the
@@ -651,7 +673,6 @@ pub struct State {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Search {
     pub text: String,
-    pub forward: bool,
 }
 
 impl State {

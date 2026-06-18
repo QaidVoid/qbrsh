@@ -119,7 +119,7 @@ pub enum Command {
     Memory,
     /// Move to the next in-page search match.
     FindNext,
-    /// Move to the previous in-page search match.
+    /// Move to the previous in-page search match (best-effort; see `EngineView`).
     FindPrev,
     /// Increase the active tab's zoom.
     ZoomIn,
@@ -380,7 +380,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("plugin-reload", "Recompile and reload plugins"),
     ("memory", "Report memory use and view count"),
     ("find-next", "Jump to the next search match"),
-    ("find-prev", "Jump to the previous search match"),
+    ("find-prev", "Jump to the previous search match (best-effort)"),
     ("zoom-in", "Increase page zoom"),
     ("zoom-out", "Decrease page zoom"),
     ("zoom-reset", "Reset page zoom to the default"),

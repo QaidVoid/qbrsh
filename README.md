@@ -48,11 +48,16 @@ cargo run
 | `i` / `Esc` | insert / leave mode | `yy` / `yt` | yank url / title |
 | `m` / `b` | save / load quickmark | `M` / `gb` | bookmark / load |
 | `td` | toggle dark mode | `co` | close other tabs |
-| `/` / `?` | find forward / back | `n` / `N` | next / prev match |
+| `/` | find in page | `n` / `N` | next / prev match |
 | `zi` / `zo` | zoom in / out | `zz` | reset zoom |
 
-Counts work (e.g. `5j`). Type `/text` (or `?text`) on the command line to search
-the page, then `n`/`N` to step through matches. In command mode, `Tab`/`Shift-Tab`
+Counts work (e.g. `5j`). Type `/text` on the command line to search the page,
+then `n` to step forward through matches (wrapping at the end). `N` steps
+backward, but is best-effort: WebKitGTK's backward search cannot reach
+hidden/collapsed content (so it can't step back into a closed accordion) and
+corrupts the find controller's heap, which surfaces as a harmless
+`free(): corrupted unsorted chunks` message when the browser exits. Prefer `n`
+(it wraps to every match) if you want to avoid that. In command mode, `Tab`/`Shift-Tab`
 move the highlight through the completion list (your typed text stays in the
 command line), `Space` applies the highlighted item so you can continue with an
 argument, and `Enter` runs the highlighted item (or the typed text if none is

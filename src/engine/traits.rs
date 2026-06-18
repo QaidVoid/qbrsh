@@ -27,13 +27,15 @@ pub trait EngineView {
     /// Set the page zoom level (1.0 = 100%).
     fn set_zoom(&self, level: f64);
 
-    /// Search the page for `text`, moving forward or backward to the first match.
-    fn find(&self, text: &str, forward: bool);
+    /// Search the page for `text`, moving to the first match.
+    fn find(&self, text: &str);
 
-    /// Move to the next match in the current search direction.
+    /// Move to the next match, wrapping at the end.
     fn find_next(&self);
 
-    /// Move to the match in the opposite direction.
+    /// Move to the previous match. Best-effort: WebKit's backward search is
+    /// unreliable (cannot reach hidden/collapsed content and corrupts the find
+    /// controller's heap, surfacing as a harmless error at process exit).
     fn find_previous(&self);
 
     /// Clear the current search highlight.

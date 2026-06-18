@@ -63,7 +63,9 @@ pub fn default_bindings() -> BindingTrie {
     bind("b", "cmd-set-text :quickmark-load ");
     bind("gb", "cmd-set-text :bookmark-load ");
 
-    // Find repeat
+    // Find. `n` steps forward (wrapping); `N` is a best-effort backward step
+    // (WebKit's backward search is unreliable, see EngineView::find_previous).
+    bind("/", "cmd-set-text /");
     bind("n", "find-next");
     bind("N", "find-prev");
 

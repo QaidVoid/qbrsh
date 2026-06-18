@@ -90,6 +90,12 @@ impl GtkEffectRunner {
             .scroll_percent
             .map(|p| format!("  {p}%"))
             .unwrap_or_default();
+        let search = state
+            .status
+            .search
+            .as_ref()
+            .map(|s| format!("  [{}]", s.label()))
+            .unwrap_or_default();
         let pending = if state.mode.current == Mode::Hint {
             state.hints.input.clone()
         } else {
@@ -106,7 +112,9 @@ impl GtkEffectRunner {
         };
         self.ui
             .statusbar
-            .set_text(&format!("-- {mode} --  {url}{progress}{scroll}{pending}"));
+            .set_text(&format!(
+                "-- {mode} --  {url}{progress}{scroll}{search}{pending}"
+            ));
 
         if state.command_line.active {
             if self.ui.commandline.text().as_str() != state.command_line.text.as_str() {
@@ -249,9 +257,9 @@ impl EffectRunner for GtkEffectRunner {
                     v.set_zoom(level);
                 }
             }
-            Effect::Find { tab, text, forward } => {
+            Effect::Find { tab, text } => {
                 if let Some(v) = self.views.get(&tab) {
-                    v.find(&text, forward);
+                    v.find(&text);
                 }
             }
             Effect::FindNext { tab } => {
