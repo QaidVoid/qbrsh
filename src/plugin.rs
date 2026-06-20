@@ -143,7 +143,13 @@ impl PluginRuntime {
 }
 
 /// Drive one hook handler to completion as an async task under budget.
-fn spawn_hook(name: String, runtime: Arc<RuntimeContext>, unit: Arc<Unit>, handler: String, arg: String) {
+fn spawn_hook(
+    name: String,
+    runtime: Arc<RuntimeContext>,
+    unit: Arc<Unit>,
+    handler: String,
+    arg: String,
+) {
     glib::MainContext::default().spawn_local(async move {
         let mut vm = Vm::new(runtime, unit);
         let outcome = match vm.execute([handler.as_str()], (arg,)) {

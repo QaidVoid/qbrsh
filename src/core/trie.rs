@@ -84,7 +84,10 @@ mod tests {
     #[test]
     fn multi_key_partial_then_exact() {
         let mut t = BindingTrie::new();
-        t.insert(&[Key::plain("g"), Key::plain("g")], "scroll-to-perc 0".into());
+        t.insert(
+            &[Key::plain("g"), Key::plain("g")],
+            "scroll-to-perc 0".into(),
+        );
         assert_eq!(t.lookup(&[Key::plain("g")]), TrieMatch::Partial);
         assert_eq!(
             t.lookup(&[Key::plain("g"), Key::plain("g")]),
@@ -112,7 +115,10 @@ mod tests {
             }],
             "scroll-page down".into(),
         );
-        assert_eq!(t.lookup(&[Key::plain("f")]), TrieMatch::Exact("hint".into()));
+        assert_eq!(
+            t.lookup(&[Key::plain("f")]),
+            TrieMatch::Exact("hint".into())
+        );
         assert_eq!(
             t.lookup(&[Key {
                 sym: "f".into(),

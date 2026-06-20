@@ -10,11 +10,11 @@ use std::path::PathBuf;
 use gtk4::Application;
 use gtk4::prelude::*;
 
+use crate::config;
 use crate::core::command::{Command, OpenTarget};
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
-use crate::config;
 use crate::core::state::{Bookmark, Mode, State, TabId};
 use crate::engine::traits::EngineView;
 use crate::engine::webkit::{PermissionMirror, WebKitEngine};
@@ -47,11 +47,7 @@ impl GtkEffectRunner {
     /// directory.
     fn session_path(&self, name: &str) -> Option<PathBuf> {
         let name = name.trim();
-        if name.is_empty()
-            || name == ".."
-            || name == "."
-            || name.contains(['/', '\\'])
-        {
+        if name.is_empty() || name == ".." || name == "." || name.contains(['/', '\\']) {
             return None;
         }
         Some(self.sessions_dir.join(name))
@@ -78,7 +74,11 @@ impl GtkEffectRunner {
             Mode::Prompt => "PROMPT",
             Mode::Permissions => "PERMISSIONS",
         };
-        let url = state.tabs.active().map(|t| t.url.clone()).unwrap_or_default();
+        let url = state
+            .tabs
+            .active()
+            .map(|t| t.url.clone())
+            .unwrap_or_default();
         let prog = state.tabs.active().map(|t| t.progress).unwrap_or(0.0);
         let progress = if prog > 0.0 && prog < 1.0 {
             format!(" ({}%)", (prog * 100.0) as u32)
@@ -110,11 +110,9 @@ impl GtkEffectRunner {
         } else {
             format!("  {pending}")
         };
-        self.ui
-            .statusbar
-            .set_text(&format!(
-                "-- {mode} --  {url}{progress}{scroll}{search}{pending}"
-            ));
+        self.ui.statusbar.set_text(&format!(
+            "-- {mode} --  {url}{progress}{scroll}{search}{pending}"
+        ));
 
         if state.command_line.active {
             if self.ui.commandline.text().as_str() != state.command_line.text.as_str() {
@@ -197,8 +195,7 @@ impl GtkEffectRunner {
                 crate::core::state::PermissionPolicy::Ask => "ask",
                 crate::core::state::PermissionPolicy::Deny => "deny",
             };
-            let label =
-                gtk4::Label::new(Some(&format!("{marker}{}  {cap}  {policy}", row.host)));
+            let label = gtk4::Label::new(Some(&format!("{marker}{}  {cap}  {policy}", row.host)));
             label.set_xalign(0.0);
             self.ui.completion.append(&label);
         }
@@ -220,7 +217,9 @@ impl GtkEffectRunner {
             .unwrap_or_default();
         self.ui.tabbar.set_text(&format!("[{idx}/{n}] {title}"));
         let win_title = if title.is_empty() { "qbrsh" } else { &title };
-        self.ui.window.set_title(Some(&format!("{win_title} - qbrsh")));
+        self.ui
+            .window
+            .set_title(Some(&format!("{win_title} - qbrsh")));
     }
 }
 
@@ -356,10 +355,9 @@ impl EffectRunner for GtkEffectRunner {
             Effect::FireHook { event, arg } => self.plugins.fire(&event, &arg),
             Effect::ReloadPlugins => {
                 self.plugins.reload();
-                self.ui.statusbar.set_text(&format!(
-                    "reloaded {} plugin(s)",
-                    self.plugins.count()
-                ));
+                self.ui
+                    .statusbar
+                    .set_text(&format!("reloaded {} plugin(s)", self.plugins.count()));
             }
             Effect::PluginEval { id, tab, script } => {
                 if let Some(v) = self.views.get(&tab) {

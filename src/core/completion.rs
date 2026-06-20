@@ -219,7 +219,11 @@ mod tests {
         s.quickmarks
             .insert("gh".to_string(), "https://github.com".to_string());
         let items = complete(":open gh", &s);
-        assert!(items.iter().any(|i| i.command_line == ":open https://github.com"));
+        assert!(
+            items
+                .iter()
+                .any(|i| i.command_line == ":open https://github.com")
+        );
     }
 
     #[test]

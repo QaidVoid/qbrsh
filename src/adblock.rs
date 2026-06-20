@@ -128,8 +128,14 @@ mod tests {
 
     #[test]
     fn extracts_host() {
-        assert_eq!(host_of("https://ad.doubleclick.net/foo?x=1"), Some("ad.doubleclick.net"));
-        assert_eq!(host_of("http://user@example.com:8080/p"), Some("example.com"));
+        assert_eq!(
+            host_of("https://ad.doubleclick.net/foo?x=1"),
+            Some("ad.doubleclick.net")
+        );
+        assert_eq!(
+            host_of("http://user@example.com:8080/p"),
+            Some("example.com")
+        );
         assert_eq!(host_of("about:blank"), None);
     }
 
@@ -151,10 +157,22 @@ mod tests {
 
     #[test]
     fn site_key_is_registrable_domain() {
-        assert_eq!(site_of("https://www.example.com/x").as_deref(), Some("example.com"));
-        assert_eq!(site_of("https://example.com").as_deref(), Some("example.com"));
-        assert_eq!(site_of("https://a.b.example.com").as_deref(), Some("example.com"));
-        assert_eq!(site_of("http://127.0.0.1:8080/p").as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            site_of("https://www.example.com/x").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            site_of("https://example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            site_of("https://a.b.example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            site_of("http://127.0.0.1:8080/p").as_deref(),
+            Some("127.0.0.1")
+        );
         assert_eq!(site_of("about:blank"), None);
     }
 

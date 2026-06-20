@@ -101,7 +101,10 @@ mod tests {
             PermissionPolicy::Ask
         );
         // A per-capability rule is independent of other capabilities.
-        assert!(c.set("permissions.example.org.geolocation", "allow").is_ok());
+        assert!(
+            c.set("permissions.example.org.geolocation", "allow")
+                .is_ok()
+        );
         assert_eq!(
             c.permissions.policy_for("example.org", geo),
             PermissionPolicy::Allow

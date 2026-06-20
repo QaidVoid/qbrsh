@@ -13,14 +13,14 @@ use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
     CacheModel, Download, FindOptions, GeolocationPermissionRequest, HardwareAccelerationPolicy,
-    MemoryPressureSettings, NavigationPolicyDecision, NetworkSession, NotificationPermissionRequest,
-    PermissionRequest, PolicyDecisionType, Settings, TLSErrorsPolicy, UserContentFilter,
-    UserContentFilterStore, UserContentInjectedFrames, UserMediaPermissionRequest, UserScript,
-    UserScriptInjectionTime, WebContext, WebView,
+    MemoryPressureSettings, NavigationPolicyDecision, NetworkSession,
+    NotificationPermissionRequest, PermissionRequest, PolicyDecisionType, Settings,
+    TLSErrorsPolicy, UserContentFilter, UserContentFilterStore, UserContentInjectedFrames,
+    UserMediaPermissionRequest, UserScript, UserScriptInjectionTime, WebContext, WebView,
 };
 
 use crate::adblock;
-use crate::core::command::{Command, OpenTarget};
+use crate::core::command::{Command, OpenTarget, is_unsafe_open_target};
 use crate::core::msg::{LoadEvent, Msg};
 use crate::core::runtime::Mailbox;
 use crate::core::state::{Capability, PermissionPolicy, Permissions, TabId};
@@ -95,11 +95,7 @@ impl WebKitEngine {
             None::<&gtk4::gio::Cancellable>,
             move |result| match result {
                 Ok(compiled) => {
-                    for view in views_cb
-                        .borrow()
-                        .iter()
-                        .filter_map(|(_, w)| w.upgrade())
-                    {
+                    for view in views_cb.borrow().iter().filter_map(|(_, w)| w.upgrade()) {
                         if let Some(ucm) = view.user_content_manager() {
                             ucm.add_filter(&compiled);
                         }
@@ -328,7 +324,10 @@ fn connect_signals(
     if let Some(fc) = view.find_controller() {
         let mb = mailbox.clone();
         fc.connect_counted_matches(move |_fc, count| {
-            mb.send(Msg::FindResult { tab, matches: count });
+            mb.send(Msg::FindResult {
+                tab,
+                matches: count,
+            });
         });
         let mb = mailbox.clone();
         fc.connect_failed_to_find_text(move |_fc| {
@@ -347,13 +346,20 @@ fn connect_signals(
     });
 
     // New-window requests (target=_blank, window.open) open a foreground tab.
+    // Block only schemes that execute script or render arbitrary inline content
+    // (data:, javascript:); file: and normal web schemes pass. WebKit itself
+    // already gates cross-origin web->file: access, so we do not block file:.
     let mb = mailbox.clone();
     view.connect_create(move |_v, nav_action| {
         if let Some(uri) = nav_action.request().and_then(|r| r.uri()) {
-            mb.send(Msg::Command(Command::Open {
-                target: OpenTarget::Tab,
-                input: uri.to_string(),
-            }));
+            if is_unsafe_open_target(&uri) {
+                eprintln!("[qbrsh] blocked new-window open to unsafe target: {uri}");
+            } else {
+                mb.send(Msg::Command(Command::Open {
+                    target: OpenTarget::Tab,
+                    input: uri.to_string(),
+                }));
+            }
         }
         None
     });

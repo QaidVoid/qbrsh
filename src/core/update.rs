@@ -227,13 +227,10 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                 } else {
                     format!("{title}  {url}")
                 };
-                state
-                    .completion
-                    .items
-                    .push(CompletionItem {
-                        display,
-                        command_line,
-                    });
+                state.completion.items.push(CompletionItem {
+                    display,
+                    command_line,
+                });
             }
             vec![Effect::RenderCompletion]
         }
@@ -689,7 +686,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
         Command::Scroll(dir, count) => scroll(state, scroll_script(dir, count.max(1))),
         Command::ScrollPage { down, half } => {
             let frac = if half { 0.5 } else { 0.9 } * if down { 1.0 } else { -1.0 };
-            scroll(state, format!("window.scrollBy(0, window.innerHeight * {frac});"))
+            scroll(
+                state,
+                format!("window.scrollBy(0, window.innerHeight * {frac});"),
+            )
         }
         Command::ScrollToPercent(pct) => scroll(
             state,
@@ -942,7 +942,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
         }
         Command::BookmarkAdd => {
-            let Some((url, title)) = state.tabs.active().map(|t| (t.url.clone(), t.title.clone()))
+            let Some((url, title)) = state
+                .tabs
+                .active()
+                .map(|t| (t.url.clone(), t.title.clone()))
             else {
                 return Vec::new();
             };
@@ -1119,7 +1122,10 @@ fn find_repeat(state: &State, forward: bool) -> Vec<Effect> {
 }
 
 /// Run `f` with the active tab id, or produce no effects if there is none.
-fn with_active(state: &State, f: impl FnOnce(crate::core::state::TabId) -> Vec<Effect>) -> Vec<Effect> {
+fn with_active(
+    state: &State,
+    f: impl FnOnce(crate::core::state::TabId) -> Vec<Effect>,
+) -> Vec<Effect> {
     match state.tabs.active_id() {
         Some(tab) => f(tab),
         None => Vec::new(),
@@ -1276,7 +1282,10 @@ mod tests {
     #[test]
     fn slash_search_sets_last_search_and_emits_find() {
         let mut state = state_with_tab();
-        update(&mut state, Msg::Command(Command::SetCommandLine("/hello".into())));
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine("/hello".into())),
+        );
         let effects = update(&mut state, Msg::Command(Command::Accept));
         assert!(matches!(&state.last_search, Some(s) if s.text == "hello"));
         assert!(effects.iter().any(|e| matches!(
@@ -1288,7 +1297,10 @@ mod tests {
     #[test]
     fn find_result_sets_total_without_clearing_line() {
         let mut state = state_with_tab();
-        update(&mut state, Msg::Command(Command::SetCommandLine("/foo".into())));
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine("/foo".into())),
+        );
         update(&mut state, Msg::Command(Command::Accept));
         let tab = state.tabs.active_id().unwrap();
         let e = update(&mut state, Msg::FindResult { tab, matches: 3 });
@@ -1299,7 +1311,10 @@ mod tests {
         assert!(e.iter().any(|x| matches!(x, Effect::RenderStatus)));
         assert!(!e.iter().any(|x| matches!(x, Effect::ShowMessage { .. })));
 
-        update(&mut state, Msg::Command(Command::SetCommandLine("/".into())));
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine("/".into())),
+        );
         update(&mut state, Msg::Command(Command::Accept));
         assert_eq!(state.status.search, None);
     }
@@ -1357,11 +1372,18 @@ mod tests {
         request_permission(&mut state, 7, "example.com");
         let effects = press(&mut state, "y");
         assert!(effects.contains(&Effect::ResolvePermission { id: 7, allow: true }));
-        assert!(!effects.iter().any(|e| matches!(e, Effect::SavePermissions(_))));
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::SavePermissions(_)))
+        );
         assert_eq!(state.mode.current, Mode::Normal);
         // Nothing persisted: the site still resolves to the default (ask).
         assert_eq!(
-            state.config.permissions.policy_for("example.com", crate::core::state::Capability::Camera),
+            state
+                .config
+                .permissions
+                .policy_for("example.com", crate::core::state::Capability::Camera),
             PermissionPolicy::Ask
         );
     }
@@ -1372,10 +1394,21 @@ mod tests {
         request_permission(&mut state, 3, "example.com");
         let effects = press(&mut state, "a");
         assert!(effects.contains(&Effect::ResolvePermission { id: 3, allow: true }));
-        assert!(effects.iter().any(|e| matches!(e, Effect::SavePermissions(_))));
-        assert!(effects.iter().any(|e| matches!(e, Effect::SyncPermissions(_))));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SavePermissions(_)))
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SyncPermissions(_)))
+        );
         assert_eq!(
-            state.config.permissions.policy_for("example.com", crate::core::state::Capability::Camera),
+            state
+                .config
+                .permissions
+                .policy_for("example.com", crate::core::state::Capability::Camera),
             PermissionPolicy::Allow
         );
     }
@@ -1388,7 +1421,10 @@ mod tests {
         assert_eq!(state.prompts.len(), 2);
         // Deny the first; the second stays queued and we remain in Prompt mode.
         let effects = press(&mut state, "n");
-        assert!(effects.contains(&Effect::ResolvePermission { id: 1, allow: false }));
+        assert!(effects.contains(&Effect::ResolvePermission {
+            id: 1,
+            allow: false
+        }));
         assert_eq!(state.mode.current, Mode::Prompt);
         assert_eq!(state.prompts.front().map(|p| p.id), Some(2));
     }
@@ -1458,7 +1494,13 @@ mod tests {
         let tab = state.tabs.active_id().unwrap();
         update(&mut state, Msg::InputFocusChanged { tab, focused: true });
         assert_eq!(state.mode.current, Mode::Insert);
-        update(&mut state, Msg::InputFocusChanged { tab, focused: false });
+        update(
+            &mut state,
+            Msg::InputFocusChanged {
+                tab,
+                focused: false,
+            },
+        );
         assert_eq!(state.mode.current, Mode::Normal);
     }
 
@@ -1637,7 +1679,13 @@ mod tests {
         );
         assert_eq!(state.tabs.len(), before + 1);
         assert_eq!(state.tabs.active_index(), before); // newly focused
-        assert!(matches!(effects[0], Effect::OpenTab { background: false, .. }));
+        assert!(matches!(
+            effects[0],
+            Effect::OpenTab {
+                background: false,
+                ..
+            }
+        ));
         assert!(effects.contains(&Effect::RenderTabs));
     }
 
@@ -1698,7 +1746,10 @@ mod tests {
         let mut state = state_with_tab();
         let tab = state.tabs.active_id().unwrap();
 
-        let effects = update(&mut state, Msg::Command(Command::Scroll(ScrollDir::Down, 2)));
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::Scroll(ScrollDir::Down, 2)),
+        );
         // A single eval both scrolls and reads back the percentage.
         let read = effects
             .iter()
@@ -1711,7 +1762,10 @@ mod tests {
                 _ => None,
             })
             .expect("a ReadScrollPercent eval is emitted");
-        assert_eq!(state.pending_js.get(&read), Some(&JsPurpose::ReadScrollPercent));
+        assert_eq!(
+            state.pending_js.get(&read),
+            Some(&JsPurpose::ReadScrollPercent)
+        );
 
         // Simulate the engine returning the result.
         let follow = update(
@@ -1847,7 +1901,13 @@ mod tests {
                 entries: vec![("https://github.com".to_string(), "GitHub".to_string())],
             },
         );
-        assert!(state.completion.items.iter().any(|i| i.command_line == ":open https://github.com"));
+        assert!(
+            state
+                .completion
+                .items
+                .iter()
+                .any(|i| i.command_line == ":open https://github.com")
+        );
         assert!(effects.contains(&Effect::RenderCompletion));
     }
 
@@ -1867,7 +1927,13 @@ mod tests {
                 entries: vec![("https://stale.test".to_string(), String::new())],
             },
         );
-        assert!(!state.completion.items.iter().any(|i| i.command_line.contains("stale")));
+        assert!(
+            !state
+                .completion
+                .items
+                .iter()
+                .any(|i| i.command_line.contains("stale"))
+        );
     }
 
     #[test]
@@ -1936,7 +2002,10 @@ mod tests {
         let mut state = state_with_tab();
         let effects = update(
             &mut state,
-            Msg::SessionLoaded(vec!["https://a.test".to_string(), "https://b.test".to_string()]),
+            Msg::SessionLoaded(vec![
+                "https://a.test".to_string(),
+                "https://b.test".to_string(),
+            ]),
         );
         assert_eq!(state.tabs.len(), 3);
         let opened = effects
@@ -1982,7 +2051,10 @@ mod tests {
     #[test]
     fn completion_tab_cycles_without_changing_command_line() {
         let mut state = state_with_tab();
-        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine(":".to_string())),
+        );
         let typed = state.command_line.text.clone();
         let count = state.completion.items.len();
         assert!(count > 1);
@@ -1999,7 +2071,10 @@ mod tests {
     #[test]
     fn completion_enter_runs_highlighted_item() {
         let mut state = state_with_tab();
-        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine(":".to_string())),
+        );
         update(&mut state, Msg::CompletionNext); // highlight first command (open)
         // Enter runs the highlighted command, not the typed ":".
         let effects = update(&mut state, Msg::Command(Command::Accept));
@@ -2012,19 +2087,31 @@ mod tests {
     #[test]
     fn completion_edit_resets_selection() {
         let mut state = state_with_tab();
-        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine(":".to_string())),
+        );
         update(&mut state, Msg::CompletionNext);
         assert_eq!(state.completion.selected, Some(0));
         // A genuine edit recomputes and drops the selection.
         update(&mut state, Msg::CommandLineChanged(":qui".to_string()));
         assert_eq!(state.completion.selected, None);
-        assert!(state.completion.items.iter().any(|i| i.command_line == ":quit "));
+        assert!(
+            state
+                .completion
+                .items
+                .iter()
+                .any(|i| i.command_line == ":quit ")
+        );
     }
 
     #[test]
     fn completion_space_applies_selection() {
         let mut state = state_with_tab();
-        update(&mut state, Msg::Command(Command::SetCommandLine(":".to_string())));
+        update(
+            &mut state,
+            Msg::Command(Command::SetCommandLine(":".to_string())),
+        );
         update(&mut state, Msg::CompletionNext); // highlight first command (open)
         let chosen = state.completion.preview().unwrap().to_string();
         update(&mut state, Msg::CompletionApply);

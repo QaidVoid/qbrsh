@@ -394,7 +394,9 @@ impl PermissionPolicy {
 }
 
 /// A capability a page can request, decided independently per site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Capability {
     Geolocation,
@@ -621,9 +623,10 @@ impl Config {
                 let policy = PermissionPolicy::parse(value)?;
                 // A trailing capability segment sets that capability; otherwise
                 // the key is a bare host and sets every capability.
-                match rest.rsplit_once('.').and_then(|(host, last)| {
-                    Capability::parse(last).map(|cap| (host, cap))
-                }) {
+                match rest
+                    .rsplit_once('.')
+                    .and_then(|(host, last)| Capability::parse(last).map(|cap| (host, cap)))
+                {
                     Some((host, cap)) => self.permissions.set_capability(host, cap, policy),
                     None => self.permissions.set_all(rest, policy),
                 }
@@ -701,7 +704,11 @@ mod permission_tests {
     #[test]
     fn capabilities_are_independent() {
         let mut p = Permissions::default();
-        p.set_capability("example.com", Capability::Notifications, PermissionPolicy::Allow);
+        p.set_capability(
+            "example.com",
+            Capability::Notifications,
+            PermissionPolicy::Allow,
+        );
         assert_eq!(
             p.policy_for("example.com", Capability::Notifications),
             PermissionPolicy::Allow
@@ -748,8 +755,7 @@ mod permission_tests {
 
     #[test]
     fn per_capability_config_parses() {
-        let toml =
-            "[sites]\n\"example.com\" = { geolocation = \"allow\", camera = \"deny\" }\n";
+        let toml = "[sites]\n\"example.com\" = { geolocation = \"allow\", camera = \"deny\" }\n";
         let p: Permissions = toml::from_str(toml).unwrap();
         assert_eq!(
             p.policy_for("example.com", Capability::Geolocation),

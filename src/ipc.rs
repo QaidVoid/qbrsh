@@ -153,12 +153,19 @@ mod tests {
         let cmd =
             parse_request(r#"{"method":"run_command","params":{"command":"tabopen https://x"}}"#)
                 .unwrap();
-        assert!(matches!(cmd, Command::Open { target: OpenTarget::Tab, .. }));
+        assert!(matches!(
+            cmd,
+            Command::Open {
+                target: OpenTarget::Tab,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn parses_open_url() {
-        let cmd = parse_request(r#"{"method":"open_url","params":{"url":"https://a.test"}}"#).unwrap();
+        let cmd =
+            parse_request(r#"{"method":"open_url","params":{"url":"https://a.test"}}"#).unwrap();
         assert_eq!(
             cmd,
             Command::Open {

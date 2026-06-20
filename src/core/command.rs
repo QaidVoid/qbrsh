@@ -157,7 +157,11 @@ impl Command {
         };
         let rest: Vec<&str> = parts.collect();
         let arg = rest.join(" ");
-        let count = |default: u32| rest.first().and_then(|s| s.parse::<u32>().ok()).unwrap_or(default);
+        let count = |default: u32| {
+            rest.first()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(default)
+        };
 
         let cmd = match name {
             "open" | "o" => Command::Open {
@@ -273,6 +277,19 @@ pub fn is_safe_external_target(input: &str) -> bool {
     }
 }
 
+/// Whether `input` uses a scheme that must never be opened as a new tab from
+/// page content (`window.open`, `target=_blank`), because the scheme executes
+/// script (`javascript:`) or renders arbitrary inline content (`data:`). Other
+/// schemes are allowed, including `file:`: WebKit already gates cross-origin
+/// access to local files at the engine level, so blocking `file:` here would
+/// only break same-context local browsing.
+pub fn is_unsafe_open_target(input: &str) -> bool {
+    match scheme_of(input.trim()) {
+        Some(s) => matches!(s.to_ascii_lowercase().as_str(), "data" | "javascript"),
+        None => false,
+    }
+}
+
 /// Whether a parsed command may be invoked by an untrusted remote (IPC) client.
 /// Restricts the remote surface to navigation, scrolling, and tab commands, and
 /// validates the target of any open. Sensitive commands (config mutation, quit,
@@ -380,7 +397,10 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("plugin-reload", "Recompile and reload plugins"),
     ("memory", "Report memory use and view count"),
     ("find-next", "Jump to the next search match"),
-    ("find-prev", "Jump to the previous search match (best-effort)"),
+    (
+        "find-prev",
+        "Jump to the previous search match (best-effort)",
+    ),
     ("zoom-in", "Increase page zoom"),
     ("zoom-out", "Decrease page zoom"),
     ("zoom-reset", "Reset page zoom to the default"),
@@ -407,9 +427,20 @@ mod tests {
     fn safe_external_targets_reject_dangerous_schemes() {
         assert!(!is_safe_external_target("file:///etc/passwd"));
         assert!(!is_safe_external_target("file:///home/me/.ssh/id_rsa"));
-        assert!(!is_safe_external_target("data:text/html,<script>1</script>"));
+        assert!(!is_safe_external_target(
+            "data:text/html,<script>1</script>"
+        ));
         assert!(!is_safe_external_target("javascript:alert(1)"));
         assert!(!is_safe_external_target("about:config"));
+    }
+
+    #[test]
+    fn unsafe_open_target_blocks_only_data_and_javascript() {
+        assert!(is_unsafe_open_target("data:text/html,<h1>hi</h1>"));
+        assert!(is_unsafe_open_target("javascript:alert(1)"));
+        // Scheme match is case-insensitive, surrounding whitespace trimmed.
+        assert!(is_unsafe_open_target("JavaScript:alert(1)"));
+        assert!(is_unsafe_open_target("  data:text/plain,x  "));
     }
 
     #[test]

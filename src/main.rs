@@ -12,9 +12,9 @@ mod marks;
 mod plugin;
 mod ui;
 
+use gtk4::Application;
 use gtk4::gio::ApplicationFlags;
 use gtk4::prelude::*;
-use gtk4::Application;
 
 const APP_ID: &str = "org.qbrsh.browser";
 

@@ -45,10 +45,7 @@ fn read_pairs(path: &Path) -> Vec<(String, String)> {
 }
 
 fn write_pairs(path: &Path, entries: &[(String, String)]) {
-    let body: String = entries
-        .iter()
-        .map(|(a, b)| format!("{a} {b}\n"))
-        .collect();
+    let body: String = entries.iter().map(|(a, b)| format!("{a} {b}\n")).collect();
     if let Err(e) = fs::write(path, body) {
         eprintln!("[qbrsh] could not write {}: {e}", path.display());
     }
