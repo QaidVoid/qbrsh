@@ -96,10 +96,20 @@ pub enum Msg {
     },
     /// An in-page search reported its match count (0 means no matches).
     FindResult { tab: TabId, matches: u32 },
-    /// A download started; `filename` is its chosen destination name.
-    DownloadStarted { id: u64, filename: String },
-    /// A download finished, saved at `path`.
-    DownloadFinished { id: u64, path: String },
+    /// A download started; `filename` is its chosen destination name, `path` the
+    /// full destination, and `source` the original URL (kept for retry).
+    DownloadStarted {
+        id: u64,
+        filename: String,
+        path: String,
+        source: String,
+    },
+    /// Live progress for a download; `total` is `0` when unknown.
+    DownloadProgress { id: u64, received: u64, total: u64 },
+    /// A download finished. The destination path is held on the download record.
+    DownloadFinished { id: u64 },
     /// A download failed.
     DownloadFailed { id: u64, error: String },
+    /// A download was cancelled by the user.
+    DownloadCancelled { id: u64 },
 }

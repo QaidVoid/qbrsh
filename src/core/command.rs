@@ -131,6 +131,8 @@ pub enum Command {
     ZoomSet(u32),
     /// Open the per-site permission management view.
     Permissions,
+    /// Open the download management view.
+    Downloads,
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -242,6 +244,7 @@ impl Command {
                     .ok_or_else(|| format!("zoom needs a percentage: {arg}"))?,
             ),
             "permissions" => Command::Permissions,
+            "downloads" => Command::Downloads,
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -406,6 +409,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("zoom-reset", "Reset page zoom to the default"),
     ("zoom", "Set page zoom to a percentage"),
     ("permissions", "Manage per-site permissions"),
+    ("downloads", "Manage downloads"),
     ("quit", "Quit the browser"),
 ];
 

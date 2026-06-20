@@ -7,6 +7,7 @@
 
 use crate::core::msg::{JsPurpose, RequestId};
 use crate::core::state::{Permissions, TabId};
+use std::path::PathBuf;
 
 /// Severity of a user-facing message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +71,8 @@ pub enum Effect {
     RenderCompletion,
     /// Re-render the permission management list from current state.
     RenderPermissions,
+    /// Re-render the download management list from current state.
+    RenderDownloads,
     /// Apply the current theme (colors, font) to the chrome.
     ApplyTheme,
     /// Push the current per-site permission policy to the engine.
@@ -88,6 +91,14 @@ pub enum Effect {
     FindClear { tab: TabId },
     /// Persist the per-site permission rules to the data-dir store.
     SavePermissions(Permissions),
+    /// Cancel an in-flight download by id.
+    CancelDownload { id: u64 },
+    /// Retry a failed download by id; the source URL is resolved from state.
+    RetryDownload { id: u64 },
+    /// Open a finished download's file through the safe external-open path.
+    OpenPath { path: PathBuf },
+    /// Open the folder containing a finished download's file.
+    RevealPath { path: PathBuf },
     /// Reload the configuration file from disk.
     ReloadConfig,
     /// Persist a named session's tab URLs.

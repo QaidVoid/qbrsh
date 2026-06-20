@@ -75,9 +75,9 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
             }
             // Insert mode forwards keys to the page.
             Mode::Insert => glib::Propagation::Proceed,
-            // Normal, Hint, Prompt, and Permissions modes route every key through
-            // the core.
-            Mode::Normal | Mode::Hint | Mode::Prompt | Mode::Permissions => {
+            // Normal, Hint, Prompt, Permissions, and Downloads modes route every
+            // key through the core.
+            Mode::Normal | Mode::Hint | Mode::Prompt | Mode::Permissions | Mode::Downloads => {
                 mb.send(Msg::Key(key));
                 glib::Propagation::Stop
             }

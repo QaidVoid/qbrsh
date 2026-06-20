@@ -73,6 +73,7 @@ impl GtkEffectRunner {
             Mode::Hint => "HINT",
             Mode::Prompt => "PROMPT",
             Mode::Permissions => "PERMISSIONS",
+            Mode::Downloads => "DOWNLOADS",
         };
         let url = state
             .tabs
@@ -197,6 +198,55 @@ impl GtkEffectRunner {
             };
             let label = gtk4::Label::new(Some(&format!("{marker}{}  {cap}  {policy}", row.host)));
             label.set_xalign(0.0);
+            self.ui.completion.append(&label);
+        }
+    }
+
+    fn render_downloads(&self, state: &State) {
+        while let Some(child) = self.ui.completion.first_child() {
+            self.ui.completion.remove(&child);
+        }
+        let show = state.mode.current == Mode::Downloads;
+        self.ui.completion.set_visible(show);
+        if !show {
+            return;
+        }
+        if state.downloads.is_empty() {
+            let label = gtk4::Label::new(Some("no downloads yet"));
+            label.set_xalign(0.0);
+            self.ui.completion.append(&label);
+            return;
+        }
+        let header = gtk4::Label::new(Some(
+            "  [o] open  [r] reveal  [c] cancel  [R] retry  [x] clear  j/k move  Esc close",
+        ));
+        header.set_xalign(0.0);
+        self.ui.completion.append(&header);
+        // Newest first: iterate download ids in descending order.
+        let ordered: Vec<_> = state.downloads.iter().rev().collect();
+        let selected = state.dl_view.selected.min(ordered.len().saturating_sub(1));
+        for (i, (id, dl)) in ordered.iter().enumerate() {
+            let marker = if i == selected { "▸ " } else { "  " };
+            let status = dl.status.as_str();
+            let progress = match dl.status {
+                crate::core::state::DownloadStatus::Finished => "done".to_string(),
+                _ => match dl.fraction() {
+                    Some(f) => format!(
+                        "{}/{} ({:.0}%)",
+                        fmt_bytes(dl.received),
+                        fmt_bytes(dl.total),
+                        f * 100.0
+                    ),
+                    None => fmt_bytes(dl.received),
+                },
+            };
+            let label = gtk4::Label::new(Some(&format!(
+                "{marker}#{id}  {}  [{status}]  {progress}",
+                dl.filename
+            )));
+            label.set_xalign(0.0);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            label.set_max_width_chars(120);
             self.ui.completion.append(&label);
         }
     }
@@ -337,6 +387,20 @@ impl EffectRunner for GtkEffectRunner {
             Effect::SavePermissions(permissions) => {
                 config::save_permissions(&self.permissions_path, &permissions);
             }
+            Effect::CancelDownload { id } => self.engine.cancel_download(id),
+            Effect::RetryDownload { id } => {
+                if let Some(dl) = state.downloads.get(&id) {
+                    self.engine.retry_download(&dl.source);
+                }
+            }
+            Effect::OpenPath { path } => open_path_external(&path),
+            Effect::RevealPath { path } => {
+                if let Some(parent) = path.parent() {
+                    open_path_external(parent);
+                } else {
+                    open_path_external(&path);
+                }
+            }
             Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(config::load())),
             Effect::SaveSession { name, urls } => {
                 if let Some(path) = self.session_path(&name) {
@@ -386,6 +450,7 @@ impl EffectRunner for GtkEffectRunner {
             Effect::RenderTabs => self.render_tabs(state),
             Effect::RenderCompletion => self.render_completion(state),
             Effect::RenderPermissions => self.render_permissions(state),
+            Effect::RenderDownloads => self.render_downloads(state),
             Effect::ShowMessage { text, .. } => {
                 self.ui.statusbar.set_text(&text);
             }
@@ -410,6 +475,37 @@ fn memory_report(views: usize) -> String {
     match resident_memory_bytes() {
         Some(bytes) => format!("memory {} MB  views {views}", bytes / 1_048_576),
         None => format!("memory unavailable  views {views}"),
+    }
+}
+
+/// Format a byte count with a binary unit suffix (KiB, MiB, ...), 1 decimal.
+fn fmt_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Launch `xdg-open` on `path` (best-effort), used to open a finished download
+/// or its containing folder. The browser is Linux-only already (it reads
+/// `/proc/self/statm` for memory), so a desktop portal helper is sufficient.
+fn open_path_external(path: &std::path::Path) {
+    match std::process::Command::new("xdg-open").arg(path).spawn() {
+        Ok(mut child) => {
+            // Reap to avoid zombies; the launcher returns immediately.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => eprintln!("[qbrsh] could not open {}: {e}", path.display()),
     }
 }
 
@@ -443,6 +539,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let downloads_dir = directories::UserDirs::new()
         .and_then(|u| u.download_dir().map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| dir.join("downloads"));
+    let _ = std::fs::create_dir_all(&downloads_dir);
     let engine = WebKitEngine::new(
         false,
         blocklist,

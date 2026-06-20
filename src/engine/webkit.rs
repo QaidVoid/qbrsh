@@ -14,9 +14,10 @@ use webkit6::prelude::*;
 use webkit6::{
     CacheModel, Download, FindOptions, GeolocationPermissionRequest, HardwareAccelerationPolicy,
     MemoryPressureSettings, NavigationPolicyDecision, NetworkSession,
-    NotificationPermissionRequest, PermissionRequest, PolicyDecisionType, Settings,
-    TLSErrorsPolicy, UserContentFilter, UserContentFilterStore, UserContentInjectedFrames,
-    UserMediaPermissionRequest, UserScript, UserScriptInjectionTime, WebContext, WebView,
+    NotificationPermissionRequest, PermissionRequest, PolicyDecisionType, ResponsePolicyDecision,
+    Settings, TLSErrorsPolicy, UserContentFilter, UserContentFilterStore,
+    UserContentInjectedFrames, UserMediaPermissionRequest, UserScript, UserScriptInjectionTime,
+    WebContext, WebView,
 };
 
 use crate::adblock;
@@ -32,6 +33,12 @@ use super::traits::EngineView;
 
 /// Shared, runtime-updatable permission policy read by the permission handler.
 pub type PermissionMirror = Rc<RefCell<Permissions>>;
+
+/// Live download handles held by the engine for cancel, keyed by id.
+type DownloadMap = Rc<RefCell<HashMap<u64, Download>>>;
+/// Ids of user-cancelled downloads, so their in-flight failure is reported as a
+/// cancellation rather than an error.
+type CancelledDownloads = Rc<RefCell<HashSet<u64>>>;
 
 /// Upper bound on in-page matches counted/highlighted per search. Capped rather
 /// than unbounded because an unbounded limit has crashed WebKit's find
@@ -65,6 +72,10 @@ pub struct WebKitEngine {
     pending_permissions: PendingPermissions,
     /// Allocates ids for deferred permission requests.
     next_permission_id: Rc<Cell<u64>>,
+    /// Active downloads held for cancel, keyed by id; dropped on terminal state.
+    downloads: DownloadMap,
+    /// Ids whose in-flight failure should be reported as a user cancellation.
+    cancelled_downloads: CancelledDownloads,
 }
 
 impl WebKitEngine {
@@ -128,10 +139,31 @@ impl WebKitEngine {
         let dl_dir = downloads_dir.to_path_buf();
         let dl_mailbox = mailbox.clone();
         let dl_id = Rc::new(Cell::new(0u64));
+        let dl_map: DownloadMap = Rc::new(RefCell::new(HashMap::new()));
+        let dl_cancelled: CancelledDownloads = Rc::new(RefCell::new(HashSet::new()));
+        // Clones moved into the per-download-started closure; the originals are
+        // kept for the engine struct (cancel/retry).
+        let dl_started_map = dl_map.clone();
+        let dl_started_cancelled = dl_cancelled.clone();
         session.connect_download_started(move |_session, download| {
             let id = dl_id.get();
             dl_id.set(id + 1);
-            wire_download(download, id, dl_dir.clone(), dl_mailbox.clone());
+            // The original request URI is available now; it is the source used
+            // for retry and surfaced to core alongside the chosen destination.
+            let source = download
+                .request()
+                .and_then(|r| r.uri())
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            wire_download(
+                download,
+                id,
+                source,
+                dl_dir.clone(),
+                dl_mailbox.clone(),
+                dl_started_map.clone(),
+                dl_started_cancelled.clone(),
+            );
         });
 
         Self {
@@ -145,6 +177,8 @@ impl WebKitEngine {
             views,
             pending_permissions: Rc::new(RefCell::new(HashMap::new())),
             next_permission_id: Rc::new(Cell::new(0)),
+            downloads: dl_map,
+            cancelled_downloads: dl_cancelled,
         }
     }
 
@@ -158,6 +192,22 @@ impl WebKitEngine {
                 request.deny();
             }
         }
+    }
+
+    /// Cancel an in-flight download by id. Records the id as user-cancelled so
+    /// the engine reports a cancellation (not a failure) when WebKit aborts. A
+    /// missing id (already finished, failed, or cancelled) is a no-op.
+    pub fn cancel_download(&self, id: u64) {
+        if let Some(dl) = self.downloads.borrow_mut().remove(&id) {
+            self.cancelled_downloads.borrow_mut().insert(id);
+            dl.cancel();
+        }
+    }
+
+    /// Re-issue a download for `source`, going through the normal download-started
+    /// path so it gets a fresh id and record. Used to retry a failed download.
+    pub fn retry_download(&self, source: &str) {
+        self.session.download_uri(source);
     }
 
     /// Build a view for `tab` loading `uri`, wiring its signals to messages on
@@ -204,6 +254,7 @@ impl WebKitEngine {
             &view,
             tab,
             mailbox,
+            self.session.clone(),
             self.blocklist.clone(),
             self.permissions.clone(),
             self.pending_permissions.clone(),
@@ -214,10 +265,12 @@ impl WebKitEngine {
 }
 
 /// Wire a view's WebKit signals to messages.
+#[allow(clippy::too_many_arguments)]
 fn connect_signals(
     view: &WebView,
     tab: TabId,
     mailbox: Mailbox,
+    session: NetworkSession,
     blocklist: Rc<HashSet<String>>,
     permissions: PermissionMirror,
     pending_permissions: PendingPermissions,
@@ -237,6 +290,29 @@ fn connect_signals(
             && adblock::is_blocked(&uri, &blocklist)
         {
             decision.ignore();
+            return true;
+        }
+        // Route responses WebKit cannot display (application/octet-stream,
+        // archives, etc.) to a download. Converting the in-flight main-frame
+        // response with decision.download() can stall (the body never streams
+        // after the page load is abandoned), so instead ignore the page load and
+        // start a standalone download for the request URI. The download is
+        // started from an idle callback, not synchronously here: emitting a fresh
+        // download (and its signals) from inside this policy handler re-enters
+        // WebKit and leaves the download stuck. Displayable types fall through.
+        if decision_type == PolicyDecisionType::Response
+            && let Some(resp) = decision.downcast_ref::<ResponsePolicyDecision>()
+            && !resp.is_mime_type_supported()
+        {
+            if let Some(uri) = resp.request().and_then(|r| r.uri()).map(|s| s.to_string()) {
+                decision.ignore();
+                let session = session.clone();
+                glib::MainContext::default().invoke_local(move || {
+                    session.download_uri(&uri);
+                });
+                return true;
+            }
+            decision.download();
             return true;
         }
         false
@@ -337,8 +413,14 @@ fn connect_signals(
 
     // Show a styled error page when a load fails (but not when we cancelled it,
     // e.g. a new-window request handed off to a tab).
+    // Show a styled error page when a load fails, but not when we caused the
+    // interruption ourselves: a navigation converted to a download (or otherwise
+    // interrupted by a policy change) is reported as a load failure, and a
+    // cancelled load is expected. Neither should clobber the current page.
     view.connect_load_failed(|v, _event, uri, error| {
-        if error.matches(webkit6::NetworkError::Cancelled) {
+        if error.matches(webkit6::NetworkError::Cancelled)
+            || error.matches(webkit6::PolicyError::FrameLoadInterruptedByPolicyChange)
+        {
             return false;
         }
         v.load_html(&error_page_html(uri, &error.to_string()), Some(uri));
@@ -395,9 +477,21 @@ fn connect_signals(
     });
 }
 
-/// Wire a started download: choose a safe destination, then report start,
-/// completion, and failure as messages.
-fn wire_download(download: &Download, id: u64, dir: PathBuf, mailbox: Mailbox) {
+/// Wire a started download: hold its handle for cancel, then choose a safe
+/// destination and report start, live progress, completion, cancellation, and
+/// failure as messages.
+fn wire_download(
+    download: &Download,
+    id: u64,
+    source: String,
+    dir: PathBuf,
+    mailbox: Mailbox,
+    map: DownloadMap,
+    cancelled: CancelledDownloads,
+) {
+    // Hold the handle so a user cancel can reach it; dropped on terminal state.
+    map.borrow_mut().insert(id, download.clone());
+
     let started = mailbox.clone();
     download.connect_decide_destination(move |dl, suggested| {
         let dest = safe_download_path(&dir, suggested);
@@ -406,20 +500,63 @@ fn wire_download(download: &Download, id: u64, dir: PathBuf, mailbox: Mailbox) {
             .and_then(|n| n.to_str())
             .unwrap_or("download")
             .to_string();
-        dl.set_destination(&dest.to_string_lossy());
-        started.send(Msg::DownloadStarted { id, filename });
+        let path = dest.to_string_lossy().to_string();
+        // set_destination requires a plain absolute path: GLib asserts
+        // g_path_is_absolute(destination), so a file:// URI is rejected and the
+        // download stalls. Core keeps this same path for display/open.
+        dl.set_destination(&path);
+        started.send(Msg::DownloadStarted {
+            id,
+            filename,
+            path,
+            source: source.clone(),
+        });
         true
     });
-    let finished = mailbox.clone();
-    download.connect_finished(move |dl| {
-        let path = dl.destination().map(|s| s.to_string()).unwrap_or_default();
-        finished.send(Msg::DownloadFinished { id, path });
+
+    // Report progress, throttled to one message per 1% of the total (or 64 KiB
+    // when the total is unknown) so the dispatch loop is not flooded per chunk.
+    let progress = mailbox.clone();
+    let last_reported = Rc::new(Cell::new(0u64));
+    let last = last_reported.clone();
+    download.connect_received_data(move |dl, _| {
+        let received = dl.received_data_length();
+        let total = dl.response().map(|r| r.content_length()).unwrap_or(0);
+        let prev = last.get();
+        let step = if total > 0 {
+            (total / 100).max(1)
+        } else {
+            64 * 1024
+        };
+        if received >= prev.saturating_add(step) || (total > 0 && received >= total) {
+            last.set(received);
+            progress.send(Msg::DownloadProgress {
+                id,
+                received,
+                total,
+            });
+        }
     });
+
+    let finished = mailbox.clone();
+    let fin_map = map.clone();
+    download.connect_finished(move |_dl| {
+        fin_map.borrow_mut().remove(&id);
+        finished.send(Msg::DownloadFinished { id });
+    });
+
+    let fail_map = map.clone();
+    let fail_cancelled = cancelled.clone();
     download.connect_failed(move |_dl, error| {
-        mailbox.send(Msg::DownloadFailed {
-            id,
-            error: error.to_string(),
-        });
+        fail_map.borrow_mut().remove(&id);
+        if fail_cancelled.borrow_mut().remove(&id) {
+            mailbox.send(Msg::DownloadCancelled { id });
+        } else {
+            mailbox.send(Msg::DownloadFailed {
+                id,
+                error: error.to_string(),
+            });
+        }
     });
 }
 
@@ -450,9 +587,12 @@ fn safe_download_path(dir: &Path, suggested: &str) -> PathBuf {
 }
 
 /// Reduce a suggested filename to a single safe component (no separators, no
-/// parent refs), falling back to `download`.
+/// parent refs, no query/fragment), falling back to `download`.
 fn sanitize_download_name(suggested: &str) -> String {
-    let base = Path::new(suggested)
+    // `suggested` may be a bare filename, a path, or (when the server gave none)
+    // a URL. Drop any query or fragment first, since neither belongs in a name.
+    let cleaned = suggested.split(['?', '#']).next().unwrap_or("");
+    let base = Path::new(cleaned)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("")
@@ -646,6 +786,12 @@ mod tests {
         assert_eq!(sanitize_download_name("/abs/dir/file.bin"), "file.bin");
         assert_eq!(sanitize_download_name(""), "download");
         assert_eq!(sanitize_download_name(".."), "download");
+        // A URL fallback must drop its query string and fragment.
+        assert_eq!(
+            sanitize_download_name("https://h.test/p/file.bin?x=1&y=2"),
+            "file.bin"
+        );
+        assert_eq!(sanitize_download_name("/p/name#frag"), "name");
     }
 
     #[test]

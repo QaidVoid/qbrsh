@@ -69,10 +69,15 @@ selected).
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:session-save/load`, `:plugin-reload`,
-`:permissions`, `:quit`.
+`:permissions`, `:downloads`, `:quit`.
 
-Downloads are saved to your XDG downloads directory with a safe, non-colliding
-filename; start, completion, and failure are reported in the status bar.
+Downloads are saved to your downloads directory (XDG `Downloads`, or
+`~/.local/share/qbrsh/downloads` as a fallback) with a safe, non-colliding
+filename. Start, progress, completion, and failure are reported in the status
+bar. `:downloads` opens a management view (newest first): `j`/`k` move the
+selection, `o` opens a finished file, `r` reveals it in its folder, `c` cancels
+an active transfer, `R` retries a failed one, and `x` clears a
+finished/failed/cancelled entry. `Esc` or `q` leaves the view.
 
 ## Configuration
 

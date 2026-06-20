@@ -11,9 +11,12 @@ use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
 use crate::core::state::{
-    Bookmark, Mode, PermissionPolicy, PermissionPrompt, Search, SearchStatus, State,
+    Bookmark, Download as DownloadRecord, DownloadStatus, Mode, PermissionPolicy, PermissionPrompt,
+    Search, SearchStatus, State,
 };
 use crate::core::trie::TrieMatch;
+
+use std::path::PathBuf;
 
 /// Apply a single message to the state and return the effects to perform.
 pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
@@ -22,6 +25,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             Mode::Hint => handle_hint_key(state, key),
             Mode::Prompt => handle_prompt_key(state, key),
             Mode::Permissions => handle_permissions_key(state, key),
+            Mode::Downloads => handle_downloads_key(state, key),
             _ => handle_key(state, key),
         },
         Msg::Command(cmd) => handle_command(state, cmd),
@@ -316,26 +320,80 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             });
             vec![Effect::RenderStatus]
         }
-        Msg::DownloadStarted { id, filename } => {
-            state.downloads.insert(id, filename.clone());
-            vec![Effect::ShowMessage {
-                level: MessageLevel::Info,
-                text: format!("downloading {filename}"),
-            }]
+        Msg::DownloadStarted {
+            id,
+            filename,
+            path,
+            source,
+        } => {
+            state.downloads.insert(
+                id,
+                DownloadRecord {
+                    filename: filename.clone(),
+                    path: PathBuf::from(path),
+                    received: 0,
+                    total: 0,
+                    status: DownloadStatus::Active,
+                    source,
+                },
+            );
+            download_message(state, format!("downloading {filename}"), MessageLevel::Info)
         }
-        Msg::DownloadFinished { id, path } => {
-            let name = state.downloads.remove(&id).unwrap_or(path);
-            vec![Effect::ShowMessage {
-                level: MessageLevel::Info,
-                text: format!("downloaded {name}"),
-            }]
+        Msg::DownloadProgress {
+            id,
+            received,
+            total,
+        } => {
+            if let Some(dl) = state.downloads.get_mut(&id) {
+                dl.received = received;
+                dl.total = total;
+            }
+            if state.mode.current == Mode::Downloads {
+                vec![Effect::RenderDownloads]
+            } else {
+                Vec::new()
+            }
+        }
+        Msg::DownloadFinished { id, .. } => {
+            if let Some(dl) = state.downloads.get_mut(&id) {
+                dl.status = DownloadStatus::Finished;
+                // Surface complete progress so the view does not stick below 100%.
+                if dl.total > 0 {
+                    dl.received = dl.total;
+                }
+            }
+            let text = state
+                .downloads
+                .get(&id)
+                .map(|dl| format!("downloaded {}: {}", dl.filename, dl.path.display()))
+                .unwrap_or_default();
+            download_message(state, text, MessageLevel::Info)
         }
         Msg::DownloadFailed { id, error } => {
-            let name = state.downloads.remove(&id).unwrap_or_default();
-            vec![Effect::ShowMessage {
-                level: MessageLevel::Error,
-                text: format!("download failed {name}: {error}"),
-            }]
+            if let Some(dl) = state.downloads.get_mut(&id) {
+                // A user-cancelled download reports its abort as a failure; keep
+                // the Cancelled status rather than overwriting it with Failed.
+                if dl.status != DownloadStatus::Cancelled {
+                    dl.status = DownloadStatus::Failed;
+                }
+            }
+            let text = state
+                .downloads
+                .get(&id)
+                .map(|dl| format!("download failed {}: {error}", dl.filename))
+                .unwrap_or_default();
+            download_message(state, text, MessageLevel::Error)
+        }
+        Msg::DownloadCancelled { id } => {
+            if let Some(dl) = state.downloads.get_mut(&id) {
+                dl.status = DownloadStatus::Cancelled;
+            }
+            let text = state
+                .downloads
+                .get(&id)
+                .map(|dl| format!("cancelled {}", dl.filename))
+                .unwrap_or_default();
+            download_message(state, text, MessageLevel::Info)
         }
 
         Msg::Crashed { tab } => {
@@ -504,6 +562,127 @@ fn persist_permission_view(state: &State) -> Vec<Effect> {
         Effect::SavePermissions(state.config.permissions.clone()),
         Effect::RenderPermissions,
     ]
+}
+
+/// Surface a download lifecycle notice, and refresh the downloads view if it is
+/// open. `text` may be empty (e.g. a finish for an already-cleared record), in
+/// which case no status message is shown.
+fn download_message(state: &State, text: String, level: MessageLevel) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    if !text.is_empty() {
+        effects.push(Effect::ShowMessage { level, text });
+    }
+    if state.mode.current == Mode::Downloads {
+        effects.push(Effect::RenderDownloads);
+    }
+    effects
+}
+
+/// The id of the selected download in newest-first order, clamped to the list.
+fn selected_download_id(state: &State) -> Option<u64> {
+    let len = state.downloads.len();
+    if len == 0 {
+        return None;
+    }
+    let idx = state.dl_view.selected.min(len - 1);
+    state.downloads.keys().rev().nth(idx).copied()
+}
+
+/// Handle a key press in the download management view: move the selection, open
+/// or reveal a finished file, cancel, retry, clear, or leave. Open and reveal
+/// only act on finished downloads; cancel only on active ones; retry only on
+/// failed ones; clear only on terminal states.
+fn handle_downloads_key(state: &mut State, key: Key) -> Vec<Effect> {
+    let len = state.downloads.len();
+    match key.sym.as_str() {
+        "j" | "Down" if len > 0 => {
+            state.dl_view.selected = (state.dl_view.selected + 1) % len;
+            vec![Effect::RenderDownloads]
+        }
+        "k" | "Up" if len > 0 => {
+            state.dl_view.selected = (state.dl_view.selected + len - 1) % len;
+            vec![Effect::RenderDownloads]
+        }
+        "o" => selected_file_effect(state, false),
+        "r" => selected_file_effect(state, true),
+        "c" => {
+            let Some(id) = selected_download_id(state) else {
+                return Vec::new();
+            };
+            let active = state
+                .downloads
+                .get(&id)
+                .is_some_and(|dl| dl.status == DownloadStatus::Active);
+            if active {
+                vec![Effect::CancelDownload { id }]
+            } else {
+                Vec::new()
+            }
+        }
+        "R" => {
+            let Some(id) = selected_download_id(state) else {
+                return Vec::new();
+            };
+            let failed = state
+                .downloads
+                .get(&id)
+                .is_some_and(|dl| dl.status == DownloadStatus::Failed);
+            if failed {
+                vec![Effect::RetryDownload { id }]
+            } else {
+                Vec::new()
+            }
+        }
+        "x" => {
+            let Some(id) = selected_download_id(state) else {
+                return Vec::new();
+            };
+            let removable = state.downloads.get(&id).is_some_and(|dl| {
+                matches!(
+                    dl.status,
+                    DownloadStatus::Finished | DownloadStatus::Failed | DownloadStatus::Cancelled
+                )
+            });
+            if !removable {
+                return Vec::new();
+            }
+            state.downloads.remove(&id);
+            let len = state.downloads.len();
+            state.dl_view.selected = if len == 0 {
+                0
+            } else if state.dl_view.selected >= len {
+                len - 1
+            } else {
+                state.dl_view.selected
+            };
+            vec![Effect::RenderDownloads]
+        }
+        "Escape" | "q" => {
+            state.mode.leave();
+            vec![Effect::RenderDownloads, Effect::RenderStatus]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Build an open/reveal effect for the selected download when it has finished;
+/// `reveal` opens the containing folder instead of the file.
+fn selected_file_effect(state: &State, reveal: bool) -> Vec<Effect> {
+    let Some(id) = selected_download_id(state) else {
+        return Vec::new();
+    };
+    let Some(dl) = state.downloads.get(&id) else {
+        return Vec::new();
+    };
+    if dl.status != DownloadStatus::Finished {
+        return Vec::new();
+    }
+    let path = dl.path.clone();
+    if reveal {
+        vec![Effect::RevealPath { path }]
+    } else {
+        vec![Effect::OpenPath { path }]
+    }
 }
 
 /// Handle a key press while in hint mode: type into the label filter, follow a
@@ -810,6 +989,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.mode.leave();
             vec![Effect::RenderPermissions, Effect::RenderStatus]
         }
+        Command::ModeLeave if state.mode.current == Mode::Downloads => {
+            state.mode.leave();
+            vec![Effect::RenderDownloads, Effect::RenderStatus]
+        }
         Command::ModeLeave => {
             let was_hint = state.mode.current == Mode::Hint;
             state.mode.leave();
@@ -1070,6 +1253,12 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.perm_view.selected = 0;
             state.mode.enter(Mode::Permissions);
             vec![Effect::RenderPermissions, Effect::RenderStatus]
+        }
+
+        Command::Downloads => {
+            state.dl_view.selected = 0;
+            state.mode.enter(Mode::Downloads);
+            vec![Effect::RenderDownloads, Effect::RenderStatus]
         }
 
         Command::Quit => {
@@ -2126,5 +2315,165 @@ mod tests {
         let effects = update(&mut state, Msg::Command(Command::Quit));
         assert!(!state.running);
         assert_eq!(effects, vec![Effect::Quit]);
+    }
+
+    // --- Downloads ---
+
+    fn dl_state() -> State {
+        State::new(Config::default())
+    }
+
+    fn start_download(state: &mut State, id: u64) {
+        update(
+            state,
+            Msg::DownloadStarted {
+                id,
+                filename: format!("file-{id}"),
+                path: format!("/tmp/file-{id}"),
+                source: format!("https://example.test/{id}"),
+            },
+        );
+    }
+
+    fn open_downloads(state: &mut State) {
+        update(state, Msg::Command(Command::Downloads));
+    }
+
+    #[test]
+    fn download_record_lifecycle_started_progress_finished() {
+        let mut state = dl_state();
+        start_download(&mut state, 1);
+        let dl = state.downloads.get(&1).unwrap();
+        assert_eq!(dl.status, DownloadStatus::Active);
+        assert_eq!(dl.filename, "file-1");
+        assert_eq!(dl.source, "https://example.test/1");
+        assert_eq!(dl.path, PathBuf::from("/tmp/file-1"));
+
+        update(
+            &mut state,
+            Msg::DownloadProgress {
+                id: 1,
+                received: 500,
+                total: 1000,
+            },
+        );
+        let dl = state.downloads.get(&1).unwrap();
+        assert_eq!(dl.received, 500);
+        assert_eq!(dl.total, 1000);
+
+        update(&mut state, Msg::DownloadFinished { id: 1 });
+        let dl = state.downloads.get(&1).unwrap();
+        assert_eq!(dl.status, DownloadStatus::Finished);
+        // Finishing snaps received to the known total so progress reads complete.
+        assert_eq!(dl.received, 1000);
+    }
+
+    #[test]
+    fn download_record_failed_and_cancelled() {
+        let mut state = dl_state();
+        start_download(&mut state, 2);
+        update(
+            &mut state,
+            Msg::DownloadFailed {
+                id: 2,
+                error: "boom".into(),
+            },
+        );
+        assert_eq!(
+            state.downloads.get(&2).unwrap().status,
+            DownloadStatus::Failed
+        );
+
+        start_download(&mut state, 3);
+        update(&mut state, Msg::DownloadCancelled { id: 3 });
+        assert_eq!(
+            state.downloads.get(&3).unwrap().status,
+            DownloadStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn download_failed_does_not_overwrite_cancelled() {
+        let mut state = dl_state();
+        start_download(&mut state, 4);
+        update(&mut state, Msg::DownloadCancelled { id: 4 });
+        // The engine reports a cancel through its failure path; core keeps Cancelled.
+        update(
+            &mut state,
+            Msg::DownloadFailed {
+                id: 4,
+                error: "aborted".into(),
+            },
+        );
+        assert_eq!(
+            state.downloads.get(&4).unwrap().status,
+            DownloadStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn downloads_clear_only_removes_terminal_records() {
+        let mut state = dl_state();
+        open_downloads(&mut state);
+        start_download(&mut state, 5); // active
+        // Clearing an active download is a no-op.
+        press(&mut state, "x");
+        assert!(state.downloads.contains_key(&5));
+        // After it finishes, clearing removes it.
+        update(&mut state, Msg::DownloadFinished { id: 5 });
+        press(&mut state, "x");
+        assert!(!state.downloads.contains_key(&5));
+    }
+
+    #[test]
+    fn downloads_open_reveal_guarded_by_finished() {
+        let mut state = dl_state();
+        open_downloads(&mut state);
+        start_download(&mut state, 6); // active
+        // Open/reveal do nothing while the download is still active.
+        assert!(press(&mut state, "o").is_empty());
+        assert!(press(&mut state, "r").is_empty());
+
+        update(&mut state, Msg::DownloadFinished { id: 6 });
+        let effects = press(&mut state, "o");
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenPath { path } if path.as_path() == std::path::Path::new("/tmp/file-6")
+        )));
+        let effects = press(&mut state, "r");
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::RevealPath { .. }))
+        );
+    }
+
+    #[test]
+    fn downloads_cancel_and_retry_guards() {
+        let mut state = dl_state();
+        open_downloads(&mut state);
+        start_download(&mut state, 7); // active
+        // Cancel acts on an active download; retry does not.
+        assert!(
+            press(&mut state, "c")
+                .iter()
+                .any(|e| matches!(e, Effect::CancelDownload { id: 7 }))
+        );
+        assert!(press(&mut state, "R").is_empty());
+
+        // Retry acts on a failed download; cancel does not.
+        update(
+            &mut state,
+            Msg::DownloadFailed {
+                id: 7,
+                error: "x".into(),
+            },
+        );
+        assert!(
+            press(&mut state, "R")
+                .iter()
+                .any(|e| matches!(e, Effect::RetryDownload { id: 7 }))
+        );
+        assert!(press(&mut state, "c").is_empty());
     }
 }

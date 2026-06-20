@@ -7,6 +7,7 @@
 //! exercises (mode, tabs, input, command line, status, config).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::path::PathBuf;
 
 use crate::core::bindings::default_bindings;
 use crate::core::command::HintTarget;
@@ -26,6 +27,8 @@ pub enum Mode {
     Prompt,
     /// Browsing the permission management list.
     Permissions,
+    /// Browsing the download management list.
+    Downloads,
 }
 
 /// Tracks the current mode and the one to return to on leave.
@@ -574,6 +577,62 @@ pub struct PermissionViewState {
     pub selected: usize,
 }
 
+/// Lifecycle stage of a tracked download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadStatus {
+    /// Transfer in progress.
+    Active,
+    /// Saved to disk successfully.
+    Finished,
+    /// Transfer aborted with an error.
+    Failed,
+    /// Cancelled by the user.
+    Cancelled,
+}
+
+impl DownloadStatus {
+    /// The lowercase status label shown in the management view.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DownloadStatus::Active => "active",
+            DownloadStatus::Finished => "finished",
+            DownloadStatus::Failed => "failed",
+            DownloadStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// A tracked download and its in-progress accounting.
+#[derive(Debug, Clone)]
+pub struct Download {
+    pub filename: String,
+    pub path: PathBuf,
+    /// Bytes received so far.
+    pub received: u64,
+    /// Total expected bytes, or `0` when unknown.
+    pub total: u64,
+    pub status: DownloadStatus,
+    /// The original source URL, kept for retry.
+    pub source: String,
+}
+
+impl Download {
+    /// Progress as a fraction in `0.0..=1.0`, or `None` when the total is unknown.
+    pub fn fraction(&self) -> Option<f64> {
+        if self.total == 0 {
+            None
+        } else {
+            Some((self.received as f64 / self.total as f64).clamp(0.0, 1.0))
+        }
+    }
+}
+
+/// State of the download management list view.
+#[derive(Debug, Default)]
+pub struct DownloadViewState {
+    pub selected: usize,
+}
+
 /// User configuration, deserialized from TOML and adjustable at runtime.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -664,10 +723,12 @@ pub struct State {
     pub prompts: VecDeque<PermissionPrompt>,
     /// State of the permission management list view.
     pub perm_view: PermissionViewState,
+    /// State of the download management list view.
+    pub dl_view: DownloadViewState,
     /// The last in-page search, for `n`/`N` repeat.
     pub last_search: Option<Search>,
-    /// Active/recent downloads by id, for status reporting (id -> filename).
-    pub downloads: BTreeMap<u64, String>,
+    /// Active/recent downloads by id, retained until cleared from the view.
+    pub downloads: BTreeMap<u64, Download>,
     /// Cleared to false to request shutdown.
     pub running: bool,
 }
