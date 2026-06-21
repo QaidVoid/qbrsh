@@ -26,6 +26,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             Mode::Prompt => handle_prompt_key(state, key),
             Mode::Permissions => handle_permissions_key(state, key),
             Mode::Downloads => handle_downloads_key(state, key),
+            Mode::History => handle_history_key(state, key),
             _ => handle_key(state, key),
         },
         Msg::Command(cmd) => handle_command(state, cmd),
@@ -276,6 +277,21 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                 effects.extend(open_tab(state, url, true));
             }
             effects
+        }
+
+        Msg::HistoryViewResult { generation, rows } => {
+            // Ignore results from a query older than the current one.
+            if generation != state.history_view.generation {
+                return Vec::new();
+            }
+            state.history_view.rows = rows;
+            let len = state.history_view.rows.len();
+            if len == 0 {
+                state.history_view.selected = 0;
+            } else if state.history_view.selected >= len {
+                state.history_view.selected = len - 1;
+            }
+            vec![Effect::RenderHistory]
         }
 
         Msg::PluginMessage(text) => vec![Effect::ShowMessage {
@@ -665,6 +681,150 @@ fn handle_downloads_key(state: &mut State, key: Key) -> Vec<Effect> {
     }
 }
 
+/// Bump the view-query generation and emit a query for the current filter. Newer
+/// queries carry a larger generation, so stale results are discarded on arrival.
+fn refresh_history(state: &mut State) -> Vec<Effect> {
+    state.history_view.generation = state.history_view.generation.wrapping_add(1);
+    vec![Effect::QueryHistoryView {
+        query: state.history_view.filter.clone(),
+        generation: state.history_view.generation,
+    }]
+}
+
+/// Handle a key press in the history management view. Browse mode moves the
+/// selection, opens, or deletes; `/` enters filter editing. Filter-edit mode
+/// edits the live filter and re-queries on each change.
+fn handle_history_key(state: &mut State, key: Key) -> Vec<Effect> {
+    if state.history_view.filter_edit {
+        return handle_history_filter_key(state, key);
+    }
+    let len = state.history_view.rows.len();
+    match key.sym.as_str() {
+        "j" | "Down" if len > 0 => {
+            state.history_view.selected = (state.history_view.selected + 1) % len;
+            vec![Effect::RenderHistory]
+        }
+        "k" | "Up" if len > 0 => {
+            state.history_view.selected = (state.history_view.selected + len - 1) % len;
+            vec![Effect::RenderHistory]
+        }
+        "Return" | "o" if len > 0 => open_history_current(state),
+        "t" if len > 0 => open_history_tab(state),
+        "x" if len > 0 => delete_history_selected(state),
+        "/" => {
+            state.history_view.filter_edit = true;
+            vec![Effect::RenderHistory, Effect::RenderStatus]
+        }
+        "Escape" | "q" => {
+            state.mode.leave();
+            vec![Effect::RenderHistory, Effect::RenderStatus]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Handle a key press while editing the history filter: printable keys and
+/// Backspace edit the filter and re-query; Enter or Escape returns to browse.
+fn handle_history_filter_key(state: &mut State, key: Key) -> Vec<Effect> {
+    let mut finish = || -> Vec<Effect> {
+        state.history_view.filter_edit = false;
+        state.history_view.selected = 0;
+        let mut effects = refresh_history(state);
+        effects.push(Effect::RenderHistory);
+        effects.push(Effect::RenderStatus);
+        effects
+    };
+    match key.sym.as_str() {
+        "Escape" | "Return" => finish(),
+        "BackSpace" => {
+            state.history_view.filter.pop();
+            let mut effects = refresh_history(state);
+            effects.push(Effect::RenderHistory);
+            effects
+        }
+        "space" if !key.ctrl && !key.alt => {
+            state.history_view.filter.push(' ');
+            let mut effects = refresh_history(state);
+            effects.push(Effect::RenderHistory);
+            effects
+        }
+        _ if !key.ctrl
+            && !key.alt
+            && key.sym.chars().count() == 1
+            && key.sym.chars().next().is_some_and(|c| !c.is_control()) =>
+        {
+            let c = key.sym.chars().next().unwrap();
+            state.history_view.filter.push(c);
+            let mut effects = refresh_history(state);
+            effects.push(Effect::RenderHistory);
+            effects
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Open the selected history entry in the active tab and leave the view.
+fn open_history_current(state: &mut State) -> Vec<Effect> {
+    let Some(row) = state
+        .history_view
+        .rows
+        .get(state.history_view.selected)
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    state.mode.leave();
+    let mut effects = vec![Effect::RenderHistory, Effect::RenderStatus];
+    if let Some(tab) = state.tabs.active_id() {
+        effects.push(Effect::LoadUri {
+            tab,
+            uri: normalize_target(&row.url),
+        });
+    }
+    effects
+}
+
+/// Open the selected history entry in a new foreground tab and leave the view.
+fn open_history_tab(state: &mut State) -> Vec<Effect> {
+    let Some(row) = state
+        .history_view
+        .rows
+        .get(state.history_view.selected)
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    state.mode.leave();
+    let mut effects = vec![Effect::RenderHistory, Effect::RenderStatus];
+    effects.extend(open_tab(state, normalize_target(&row.url), false));
+    effects
+}
+
+/// Delete the selected history entry locally and from the store.
+fn delete_history_selected(state: &mut State) -> Vec<Effect> {
+    let Some(row) = state
+        .history_view
+        .rows
+        .get(state.history_view.selected)
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    state.history_view.rows.remove(state.history_view.selected);
+    let len = state.history_view.rows.len();
+    state.history_view.selected = if len == 0 {
+        0
+    } else if state.history_view.selected >= len {
+        len - 1
+    } else {
+        state.history_view.selected
+    };
+    vec![
+        Effect::DeleteHistory { url: row.url },
+        Effect::RenderHistory,
+    ]
+}
+
 /// Build an open/reveal effect for the selected download when it has finished;
 /// `reveal` opens the containing folder instead of the file.
 fn selected_file_effect(state: &State, reveal: bool) -> Vec<Effect> {
@@ -993,6 +1153,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.mode.leave();
             vec![Effect::RenderDownloads, Effect::RenderStatus]
         }
+        Command::ModeLeave if state.mode.current == Mode::History => {
+            state.mode.leave();
+            vec![Effect::RenderHistory, Effect::RenderStatus]
+        }
         Command::ModeLeave => {
             let was_hint = state.mode.current == Mode::Hint;
             state.mode.leave();
@@ -1261,9 +1425,22 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             vec![Effect::RenderDownloads, Effect::RenderStatus]
         }
 
+        Command::History(arg) => {
+            state.history_view.filter = arg.unwrap_or_default();
+            state.history_view.filter_edit = false;
+            state.history_view.selected = 0;
+            state.mode.enter(Mode::History);
+            let mut effects = refresh_history(state);
+            effects.push(Effect::RenderHistory);
+            effects.push(Effect::RenderStatus);
+            effects
+        }
+
         Command::Quit => {
+            let urls = state.tabs.urls();
+            let active = state.tabs.active_index();
             state.running = false;
-            vec![Effect::Quit]
+            vec![Effect::SaveAutosave { urls, active }, Effect::Quit]
         }
         Command::Nop => Vec::new(),
     }
@@ -1403,7 +1580,7 @@ fn scroll_script(dir: ScrollDir, count: u32) -> String {
 /// A minimal heuristic for the skeleton: explicit schemes pass through, a single
 /// dotted token becomes `https://`, anything else is a DuckDuckGo search. The
 /// full search-engine and URL handling lands with the URL subsystem.
-fn normalize_target(input: &str) -> String {
+pub(crate) fn normalize_target(input: &str) -> String {
     let t = input.trim();
     if t.is_empty() {
         return "about:blank".to_string();
@@ -2314,7 +2491,12 @@ mod tests {
         let mut state = state_with_tab();
         let effects = update(&mut state, Msg::Command(Command::Quit));
         assert!(!state.running);
-        assert_eq!(effects, vec![Effect::Quit]);
+        // Quit persists the live session before tearing down.
+        assert!(effects.contains(&Effect::SaveAutosave {
+            urls: vec!["https://example.com".to_string()],
+            active: 0
+        }));
+        assert!(effects.contains(&Effect::Quit));
     }
 
     // --- Downloads ---
@@ -2475,5 +2657,146 @@ mod tests {
                 .any(|e| matches!(e, Effect::RetryDownload { id: 7 }))
         );
         assert!(press(&mut state, "c").is_empty());
+    }
+
+    // --- History view ---
+
+    use crate::core::state::HistoryRow;
+
+    fn row(url: &str, title: &str, visit_count: i64, last_visit: i64) -> HistoryRow {
+        HistoryRow {
+            url: url.to_string(),
+            title: title.to_string(),
+            visit_count,
+            last_visit,
+        }
+    }
+
+    #[test]
+    fn history_command_enters_mode_and_queries() {
+        let mut state = state_with_tab();
+        let effects = update(&mut state, Msg::Command(Command::History(None)));
+        assert_eq!(state.mode.current, Mode::History);
+        assert_eq!(state.history_view.filter, "");
+        let current_gen = state.history_view.generation;
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::QueryHistoryView { query, generation } if query.is_empty() && *generation == current_gen
+        )));
+        assert!(effects.contains(&Effect::RenderHistory));
+    }
+
+    #[test]
+    fn history_command_seeds_filter_from_arg() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::History(Some("rust".to_string()))),
+        );
+        assert_eq!(state.history_view.filter, "rust");
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::QueryHistoryView { query, .. } if query == "rust"
+        )));
+    }
+
+    #[test]
+    fn stale_history_result_is_ignored() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::History(None)));
+        let current_gen = state.history_view.generation;
+        // A result matching the current generation is applied.
+        update(
+            &mut state,
+            Msg::HistoryViewResult {
+                generation: current_gen,
+                rows: vec![row("https://a.test", "A", 1, 1)],
+            },
+        );
+        assert_eq!(state.history_view.rows.len(), 1);
+        // A stale (older-generation) result must not overwrite it.
+        update(
+            &mut state,
+            Msg::HistoryViewResult {
+                generation: current_gen.wrapping_sub(1),
+                rows: vec![],
+            },
+        );
+        assert_eq!(state.history_view.rows.len(), 1);
+    }
+
+    #[test]
+    fn history_browse_keys_move_selection() {
+        let mut state = state_with_tab();
+        state.mode.enter(Mode::History);
+        state.history_view.rows = vec![
+            row("https://a.test", "A", 1, 1),
+            row("https://b.test", "B", 2, 2),
+        ];
+        state.history_view.selected = 0;
+        press(&mut state, "j");
+        assert_eq!(state.history_view.selected, 1);
+        press(&mut state, "j"); // wraps to top
+        assert_eq!(state.history_view.selected, 0);
+        press(&mut state, "k"); // backward wraps to bottom
+        assert_eq!(state.history_view.selected, 1);
+    }
+
+    #[test]
+    fn history_delete_removes_row_and_emits_effect() {
+        let mut state = state_with_tab();
+        state.mode.enter(Mode::History);
+        state.history_view.rows = vec![
+            row("https://a.test", "A", 1, 1),
+            row("https://b.test", "B", 2, 2),
+        ];
+        state.history_view.selected = 0;
+        let effects = press(&mut state, "x");
+        assert_eq!(state.history_view.rows.len(), 1);
+        assert_eq!(state.history_view.rows[0].url, "https://b.test");
+        assert_eq!(state.history_view.selected, 0);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::DeleteHistory { url } if url == "https://a.test"))
+        );
+    }
+
+    #[test]
+    fn history_filter_edit_and_open() {
+        let mut state = state_with_tab();
+        state.mode.enter(Mode::History);
+        // `/` enters filter editing.
+        press(&mut state, "/");
+        assert!(state.history_view.filter_edit);
+        // Typing appends to the filter and re-queries.
+        let effects = press(&mut state, "r");
+        assert_eq!(state.history_view.filter, "r");
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::QueryHistoryView { query, .. } if query == "r"))
+        );
+        press(&mut state, "u");
+        assert_eq!(state.history_view.filter, "ru");
+        // Escape leaves filter editing (back to browse), not the view.
+        update(&mut state, Msg::Key(Key::plain("Escape")));
+        assert!(!state.history_view.filter_edit);
+        assert_eq!(state.mode.current, Mode::History);
+    }
+
+    #[test]
+    fn history_open_current_loads_active_tab() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        state.mode.enter(Mode::History);
+        state.history_view.rows = vec![row("https://history.test", "H", 1, 1)];
+        state.history_view.selected = 0;
+        let effects = press(&mut state, "o");
+        assert_eq!(state.mode.current, Mode::Normal);
+        assert!(effects.contains(&Effect::LoadUri {
+            tab,
+            uri: "https://history.test".to_string()
+        }));
     }
 }

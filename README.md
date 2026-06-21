@@ -69,7 +69,7 @@ selected).
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:session-save/load`, `:plugin-reload`,
-`:permissions`, `:downloads`, `:quit`.
+`:permissions`, `:downloads`, `:history`, `:quit`.
 
 Downloads are saved to your downloads directory (XDG `Downloads`, or
 `~/.local/share/qbrsh/downloads` as a fallback) with a safe, non-colliding
@@ -78,6 +78,12 @@ bar. `:downloads` opens a management view (newest first): `j`/`k` move the
 selection, `o` opens a finished file, `r` reveals it in its folder, `c` cancels
 an active transfer, `R` retries a failed one, and `x` clears a
 finished/failed/cancelled entry. `Esc` or `q` leaves the view.
+
+`:history` opens a history list (newest first) with each visit's title, URL,
+visit count, and time. `j`/`k` move the selection, `Enter` or `o` opens the
+entry in the current tab, `t` opens it in a new tab, and `x` deletes it. Press
+`/` to filter by URL or title (type to refine, `Backspace` edits, `Enter` or
+`Esc` returns to the list); a second `Esc` or `q` leaves the view.
 
 ## Configuration
 
@@ -98,6 +104,10 @@ size = 11
 [zoom]
 # Default page zoom for new tabs (1.0 = 100%).
 default = 1.0
+
+[session]
+# Reopen the tabs that were open when qbrsh last quit (true by default).
+restore = true
 
 [permissions]
 # Default policy for a capability with no rule: ask, allow, or deny.

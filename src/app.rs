@@ -5,13 +5,14 @@
 //! carried out by [`GtkEffectRunner`], which holds the UI and the per-tab views.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk4::Application;
 use gtk4::prelude::*;
 
 use crate::config;
-use crate::core::command::{Command, OpenTarget};
+use crate::core::command::Command;
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
@@ -37,6 +38,7 @@ struct GtkEffectRunner {
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
     sessions_dir: PathBuf,
+    autosave_path: PathBuf,
     permissions_path: PathBuf,
     mailbox: Mailbox,
 }
@@ -74,6 +76,7 @@ impl GtkEffectRunner {
             Mode::Prompt => "PROMPT",
             Mode::Permissions => "PERMISSIONS",
             Mode::Downloads => "DOWNLOADS",
+            Mode::History => "HISTORY",
         };
         let url = state
             .tabs
@@ -251,6 +254,69 @@ impl GtkEffectRunner {
         }
     }
 
+    fn render_history(&self, state: &State) {
+        while let Some(child) = self.ui.completion.first_child() {
+            self.ui.completion.remove(&child);
+        }
+        let show = state.mode.current == Mode::History;
+        self.ui.completion.set_visible(show);
+        if !show {
+            return;
+        }
+        // Filter line: shows the active query and whether it is being edited.
+        let filter_line = if state.history_view.filter.is_empty() {
+            "/ to filter".to_string()
+        } else {
+            format!("filter: {}", state.history_view.filter)
+        };
+        let edit_marker = if state.history_view.filter_edit {
+            " (editing)"
+        } else {
+            ""
+        };
+        let filter_label = gtk4::Label::new(Some(&format!("  {filter_line}{edit_marker}")));
+        filter_label.set_xalign(0.0);
+        self.ui.completion.append(&filter_label);
+
+        if state.history_view.rows.is_empty() {
+            let label = gtk4::Label::new(Some("  no history matches"));
+            label.set_xalign(0.0);
+            self.ui.completion.append(&label);
+            return;
+        }
+        let header = gtk4::Label::new(Some(
+            "  [Enter/o] open  [t] new tab  [x] delete  j/k move  / filter  Esc close",
+        ));
+        header.set_xalign(0.0);
+        self.ui.completion.append(&header);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let selected = state
+            .history_view
+            .selected
+            .min(state.history_view.rows.len() - 1);
+        for (i, row) in state.history_view.rows.iter().enumerate() {
+            let marker = if i == selected { "▸ " } else { "  " };
+            let title = if row.title.is_empty() {
+                row.url.as_str()
+            } else {
+                row.title.as_str()
+            };
+            let label = gtk4::Label::new(Some(&format!(
+                "{marker}{title}  {}  [{}x]  ({})",
+                row.url,
+                row.visit_count,
+                fmt_ago(row.last_visit, now)
+            )));
+            label.set_xalign(0.0);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            label.set_max_width_chars(120);
+            self.ui.completion.append(&label);
+        }
+    }
+
     fn render_tabs(&self, state: &State) {
         let n = state.tabs.len();
         let idx = state.tabs.active_index() + 1;
@@ -381,6 +447,10 @@ impl EffectRunner for GtkEffectRunner {
             } => {
                 self.history.query(query, prefix, generation);
             }
+            Effect::QueryHistoryView { query, generation } => {
+                self.history.query_view(query, generation);
+            }
+            Effect::DeleteHistory { url } => self.history.delete(url),
             Effect::ApplyTheme => self.apply_theme(state),
             Effect::SyncPermissions(permissions) => *self.permissions.borrow_mut() = permissions,
             Effect::ResolvePermission { id, allow } => self.engine.resolve_permission(id, allow),
@@ -415,6 +485,9 @@ impl EffectRunner for GtkEffectRunner {
                     .map(|s| s.lines().map(str::to_string).collect::<Vec<_>>())
                     .unwrap_or_default();
                 mailbox.send(Msg::SessionLoaded(urls));
+            }
+            Effect::SaveAutosave { urls, active } => {
+                save_autosave(&self.autosave_path, &Autosave { active, urls });
             }
             Effect::FireHook { event, arg } => self.plugins.fire(&event, &arg),
             Effect::ReloadPlugins => {
@@ -451,6 +524,7 @@ impl EffectRunner for GtkEffectRunner {
             Effect::RenderCompletion => self.render_completion(state),
             Effect::RenderPermissions => self.render_permissions(state),
             Effect::RenderDownloads => self.render_downloads(state),
+            Effect::RenderHistory => self.render_history(state),
             Effect::ShowMessage { text, .. } => {
                 self.ui.statusbar.set_text(&text);
             }
@@ -494,6 +568,32 @@ fn fmt_bytes(bytes: u64) -> String {
     }
 }
 
+/// Format a Unix timestamp as a compact relative age (e.g. "5m ago"), avoiding a
+/// date-library dependency. `now` is the current Unix seconds.
+fn fmt_ago(unix: i64, now: i64) -> String {
+    let s = (now - unix).max(0);
+    if s < 60 {
+        return "just now".to_string();
+    }
+    let m = s / 60;
+    if m < 60 {
+        return format!("{m}m ago");
+    }
+    let h = m / 60;
+    if h < 24 {
+        return format!("{h}h ago");
+    }
+    let d = h / 24;
+    if d < 30 {
+        return format!("{d}d ago");
+    }
+    let mo = d / 30;
+    if mo < 12 {
+        return format!("{mo}mo ago");
+    }
+    format!("{}y ago", d / 365)
+}
+
 /// Launch `xdg-open` on `path` (best-effort), used to open a finished download
 /// or its containing folder. The browser is Linux-only already (it reads
 /// `/proc/self/statm` for memory), so a desktop portal helper is sufficient.
@@ -516,6 +616,31 @@ fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."));
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// The live session persisted on shutdown and restored on startup: the open
+/// tabs' URLs and the index of the active tab.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Autosave {
+    active: usize,
+    urls: Vec<String>,
+}
+
+/// Load the autosave at `path`. Returns `None` when the file is missing or does
+/// not parse, so startup falls back to the homepage.
+fn load_autosave(path: &Path) -> Option<Autosave> {
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Persist the autosave to `path`, creating the parent directory if needed.
+fn save_autosave(path: &Path, autosave: &Autosave) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(autosave) {
+        let _ = std::fs::write(path, text);
+    }
 }
 
 /// Build the window, seed the first tab, and start the dispatch loop. Opens
@@ -561,26 +686,43 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         .map(|(url, title)| Bookmark { url, title })
         .collect();
 
-    let home = initial_url.unwrap_or_else(|| state.config.homepage.clone());
-    let id = state.tabs.open(&home);
-    let default_zoom = state.config.zoom.default;
-    if let Some(t) = state.tabs.get_mut(id) {
-        t.zoom = default_zoom;
-    }
-    state.tabs.focus_last();
+    // Decide the initial tab set: restore the autosaved session on a clean
+    // launch (no explicit URL) when restore is enabled, else open the homepage.
+    let autosave_path = dir.join("session.json");
+    let (initial_urls, active_index) = match initial_url {
+        Some(url) => (vec![url], 0),
+        None if state.config.session.restore => match load_autosave(&autosave_path) {
+            Some(a) if !a.urls.is_empty() => {
+                let active = a.active.min(a.urls.len() - 1);
+                (a.urls, active)
+            }
+            _ => (vec![state.config.homepage.clone()], 0),
+        },
+        None => (vec![state.config.homepage.clone()], 0),
+    };
 
+    let default_zoom = state.config.zoom.default;
     let mut views: HashMap<TabId, Box<dyn EngineView>> = HashMap::new();
-    let view = engine.create_view(id, &home, mailbox.clone());
-    view.set_zoom(default_zoom);
-    ui.stack.add_child(&view.widget());
-    ui.stack.set_visible_child(&view.widget());
-    views.insert(id, view);
-    // Load the initial page through the normalizing Open path (so a bare host
-    // like `github.com` gets a scheme).
-    mailbox.send(Msg::Command(Command::Open {
-        target: OpenTarget::Current,
-        input: home,
-    }));
+    for (i, raw) in initial_urls.iter().enumerate() {
+        // Normalize (so a bare host gains a scheme) and load directly into the
+        // new view; this mirrors the runtime Open path without depending on
+        // which tab is active when the message is later dispatched.
+        let uri = crate::core::update::normalize_target(raw);
+        let id = state.tabs.open(&uri);
+        if let Some(t) = state.tabs.get_mut(id) {
+            t.zoom = default_zoom;
+        }
+        let view = engine.create_view(id, &uri, mailbox.clone());
+        view.set_zoom(default_zoom);
+        ui.stack.add_child(&view.widget());
+        if i == active_index {
+            ui.stack.set_visible_child(&view.widget());
+        }
+        view.load_uri(&uri);
+        views.insert(id, view);
+    }
+    // Focus the saved active tab (1-based index).
+    state.tabs.focus_index_1based(active_index + 1);
 
     let history = History::open(&dir.join("history.db"), mailbox.clone());
     let plugins = PluginRuntime::new(dir.join("plugins"), mailbox.clone());
@@ -606,6 +748,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         quickmarks_path,
         bookmarks_path,
         sessions_dir: dir.join("sessions"),
+        autosave_path,
         permissions_path,
         mailbox: mailbox.clone(),
     };
@@ -615,6 +758,15 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     eprintln!("[qbrsh] startup {}", memory_report(runner.views.len()));
 
     let mode_mirror = input::install(&ui, &mailbox);
+
+    // Closing the window forwards as a quit command so the same autosave-then-
+    // quit path runs; the default close is inhibited until that completes.
+    let mb = mailbox.clone();
+    ui.window.connect_close_request(move |_| {
+        mb.send(Msg::Command(Command::Quit));
+        glib::Propagation::Stop
+    });
+
     crate::ipc::serve(mailbox.clone());
     ui.window.present();
 
@@ -627,4 +779,51 @@ pub fn run(app: &Application, initial_url: Option<String>) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autosave_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "qbrsh-autosave-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("session.json");
+        let autosave = Autosave {
+            active: 1,
+            urls: vec!["https://a.test".to_string(), "https://b.test".to_string()],
+        };
+        save_autosave(&path, &autosave);
+        let loaded = load_autosave(&path).expect("autosave loads");
+        assert_eq!(loaded.active, 1);
+        assert_eq!(loaded.urls, autosave.urls);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_autosave_missing_or_corrupt_is_none() {
+        let dir = std::env::temp_dir().join(format!(
+            "qbrsh-autosave-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Missing file.
+        assert!(load_autosave(&dir.join("nope.json")).is_none());
+        // Corrupt file.
+        let corrupt = dir.join("corrupt.json");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(&corrupt, "{ not json");
+        assert!(load_autosave(&corrupt).is_none());
+        let _ = std::fs::remove_file(&corrupt);
+    }
 }

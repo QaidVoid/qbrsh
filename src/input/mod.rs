@@ -49,12 +49,14 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
         let Some(key) = to_key(keyval, mods) else {
             return glib::Propagation::Proceed;
         };
-        // Escape leaves the current mode regardless of which mode is active.
-        if key.sym == "Escape" && !key.ctrl && !key.alt {
+        let snapshot = view.get();
+        // Escape leaves the current mode regardless of which mode is active,
+        // except in History mode where the core handles it so Esc can leave
+        // filter editing before exiting the view.
+        if key.sym == "Escape" && !key.ctrl && !key.alt && snapshot.mode != Mode::History {
             mb.send(Msg::Command(Command::ModeLeave));
             return glib::Propagation::Stop;
         }
-        let snapshot = view.get();
         match snapshot.mode {
             // The command entry handles typing and Enter; Tab cycles completion,
             // and Space applies the highlighted candidate (else a literal space).
@@ -75,9 +77,14 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
             }
             // Insert mode forwards keys to the page.
             Mode::Insert => glib::Propagation::Proceed,
-            // Normal, Hint, Prompt, Permissions, and Downloads modes route every
-            // key through the core.
-            Mode::Normal | Mode::Hint | Mode::Prompt | Mode::Permissions | Mode::Downloads => {
+            // Normal, Hint, Prompt, Permissions, Downloads, and History modes
+            // route every key through the core.
+            Mode::Normal
+            | Mode::Hint
+            | Mode::Prompt
+            | Mode::Permissions
+            | Mode::Downloads
+            | Mode::History => {
                 mb.send(Msg::Key(key));
                 glib::Propagation::Stop
             }

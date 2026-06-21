@@ -29,6 +29,8 @@ pub enum Mode {
     Permissions,
     /// Browsing the download management list.
     Downloads,
+    /// Browsing the history management list.
+    History,
 }
 
 /// Tracks the current mode and the one to return to on leave.
@@ -373,6 +375,20 @@ impl Default for Zoom {
     }
 }
 
+/// Session restore configuration.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct Session {
+    /// Whether to reopen the autosaved tabs on startup.
+    pub restore: bool,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self { restore: true }
+    }
+}
+
 /// How a site permission request is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -633,6 +649,28 @@ pub struct DownloadViewState {
     pub selected: usize,
 }
 
+/// A history entry shown in the history management view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryRow {
+    pub url: String,
+    pub title: String,
+    pub visit_count: i64,
+    /// Unix seconds of the most recent visit.
+    pub last_visit: i64,
+}
+
+/// State of the history management list view: the rendered rows, the selection,
+/// the active filter, whether the filter is being edited, and the generation
+/// used to discard stale query results.
+#[derive(Debug, Default)]
+pub struct HistoryViewState {
+    pub rows: Vec<HistoryRow>,
+    pub selected: usize,
+    pub filter: String,
+    pub filter_edit: bool,
+    pub generation: u64,
+}
+
 /// User configuration, deserialized from TOML and adjustable at runtime.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -641,6 +679,7 @@ pub struct Config {
     pub colors: Colors,
     pub font: Font,
     pub zoom: Zoom,
+    pub session: Session,
     pub permissions: Permissions,
 }
 
@@ -651,6 +690,7 @@ impl Default for Config {
             colors: Colors::default(),
             font: Font::default(),
             zoom: Zoom::default(),
+            session: Session::default(),
             permissions: Permissions::default(),
         }
     }
@@ -675,6 +715,11 @@ impl Config {
                 self.zoom.default = value
                     .parse()
                     .map_err(|_| format!("invalid zoom.default: {value}"))?
+            }
+            "session.restore" => {
+                self.session.restore = value
+                    .parse()
+                    .map_err(|_| format!("invalid session.restore: {value}"))?
             }
             "permissions.default" => self.permissions.default = PermissionPolicy::parse(value)?,
             key if key.starts_with("permissions.") => {
@@ -725,6 +770,8 @@ pub struct State {
     pub perm_view: PermissionViewState,
     /// State of the download management list view.
     pub dl_view: DownloadViewState,
+    /// State of the history management list view.
+    pub history_view: HistoryViewState,
     /// The last in-page search, for `n`/`N` repeat.
     pub last_search: Option<Search>,
     /// Active/recent downloads by id, retained until cleared from the view.

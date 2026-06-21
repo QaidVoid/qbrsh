@@ -133,6 +133,8 @@ pub enum Command {
     Permissions,
     /// Open the download management view.
     Downloads,
+    /// Open the history management view, optionally pre-filtered.
+    History(Option<String>),
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -245,6 +247,7 @@ impl Command {
             ),
             "permissions" => Command::Permissions,
             "downloads" => Command::Downloads,
+            "history" => Command::History(if arg.is_empty() { None } else { Some(arg) }),
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -410,6 +413,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("zoom", "Set page zoom to a percentage"),
     ("permissions", "Manage per-site permissions"),
     ("downloads", "Manage downloads"),
+    ("history", "Browse and search history"),
     ("quit", "Quit the browser"),
 ];
 

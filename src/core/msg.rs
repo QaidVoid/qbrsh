@@ -6,7 +6,7 @@
 
 use crate::core::command::Command;
 use crate::core::key::Key;
-use crate::core::state::{Capability, Config, TabId};
+use crate::core::state::{Capability, Config, HistoryRow, TabId};
 
 /// Correlates an asynchronous request (e.g. a JS evaluation) with its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -81,6 +81,12 @@ pub enum Msg {
     ConfigLoaded(Config),
     /// A session's tab URLs were loaded from disk.
     SessionLoaded(Vec<String>),
+    /// Asynchronous results for the history management view, tagged with the
+    /// generation they were requested for so stale results can be ignored.
+    HistoryViewResult {
+        generation: u64,
+        rows: Vec<HistoryRow>,
+    },
     /// A plugin requested a status-bar message.
     PluginMessage(String),
     /// A plugin awaited a JavaScript evaluation in the active tab.

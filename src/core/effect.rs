@@ -61,6 +61,10 @@ pub enum Effect {
         prefix: String,
         generation: u64,
     },
+    /// Query history for the management view; results return as a message.
+    QueryHistoryView { query: String, generation: u64 },
+    /// Delete a history entry by URL.
+    DeleteHistory { url: String },
     /// Record a visited page in history.
     RecordHistory { uri: String, title: String },
     /// Re-render the status bar from current state.
@@ -73,6 +77,8 @@ pub enum Effect {
     RenderPermissions,
     /// Re-render the download management list from current state.
     RenderDownloads,
+    /// Re-render the history management list from current state.
+    RenderHistory,
     /// Apply the current theme (colors, font) to the chrome.
     ApplyTheme,
     /// Push the current per-site permission policy to the engine.
@@ -105,6 +111,9 @@ pub enum Effect {
     SaveSession { name: String, urls: Vec<String> },
     /// Load a named session; its URLs return as `Msg::SessionLoaded`.
     LoadSession { name: String },
+    /// Persist the live session (open tab URLs and active index) to the
+    /// autosave file on shutdown.
+    SaveAutosave { urls: Vec<String>, active: usize },
     /// Fire a cold-event plugin hook with a string argument.
     FireHook { event: String, arg: String },
     /// Recompile and reload all plugins.
