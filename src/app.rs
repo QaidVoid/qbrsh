@@ -636,6 +636,9 @@ impl EffectRunner for GtkEffectRunner {
                     open_path_external(&path);
                 }
             }
+            Effect::ClearData { scope, host } => {
+                self.engine.clear_website_data(scope, host, mailbox.clone());
+            }
             Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(Box::new(config::load()))),
             Effect::SaveSession { name, urls } => {
                 if let Some(path) = self.session_path(&name) {
@@ -844,6 +847,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         permissions.clone(),
         site_prefs.clone(),
         favicons.clone(),
+        &dir,
         &dir.join("content-filters"),
         &downloads_dir,
         mailbox.clone(),

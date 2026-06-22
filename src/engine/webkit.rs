@@ -12,16 +12,16 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use webkit6::prelude::*;
 use webkit6::{
-    CacheModel, Download, FindOptions, GeolocationPermissionRequest, HardwareAccelerationPolicy,
-    MemoryPressureSettings, NavigationPolicyDecision, NetworkSession,
+    CacheModel, CookiePersistentStorage, Download, FindOptions, GeolocationPermissionRequest,
+    HardwareAccelerationPolicy, MemoryPressureSettings, NavigationPolicyDecision, NetworkSession,
     NotificationPermissionRequest, PermissionRequest, PolicyDecisionType, ResponsePolicyDecision,
     Settings, TLSErrorsPolicy, UserContentFilter, UserContentFilterStore,
     UserContentInjectedFrames, UserMediaPermissionRequest, UserScript, UserScriptInjectionTime,
-    WebContext, WebView,
+    WebContext, WebView, WebsiteData, WebsiteDataTypes,
 };
 
 use crate::adblock;
-use crate::core::command::{Command, OpenTarget, is_unsafe_open_target};
+use crate::core::command::{ClearScope, Command, OpenTarget, is_unsafe_open_target};
 use crate::core::msg::{LoadEvent, Msg};
 use crate::core::runtime::Mailbox;
 use crate::core::state::{Capability, PermissionPolicy, Permissions, SitePreferences, TabId};
@@ -115,6 +115,7 @@ impl WebKitEngine {
         permissions: PermissionMirror,
         site_prefs: SitePrefsMirror,
         favicons: FaviconStore,
+        data_dir: &Path,
         filter_store_dir: &Path,
         downloads_dir: &Path,
         mailbox: Mailbox,
@@ -157,10 +158,23 @@ impl WebKitEngine {
         let mut net_pressure = MemoryPressureSettings::new();
         NetworkSession::set_memory_pressure_settings(&mut net_pressure);
 
-        let session = NetworkSession::default().expect("default network session");
+        // A persistent session backed by explicit on-disk directories, so
+        // cookies, cache, and site storage survive restarts (the global default
+        // session does not persist cookies unless storage is configured).
+        let net_data = data_dir.join("network");
+        let net_cache = data_dir.join("network-cache");
+        let _ = std::fs::create_dir_all(&net_data);
+        let _ = std::fs::create_dir_all(&net_cache);
+        let session = NetworkSession::new(net_data.to_str(), net_cache.to_str());
         // Pin the secure default so it cannot silently regress: certificate
         // errors block the load rather than being ignored.
         session.set_tls_errors_policy(TLSErrorsPolicy::Fail);
+        // Persist cookies to disk so logins survive restarts.
+        if let Some(cm) = session.cookie_manager()
+            && let Some(path) = net_data.join("cookies.sqlite").to_str()
+        {
+            cm.set_persistent_storage(path, CookiePersistentStorage::Sqlite);
+        }
         // Enable the favicon database so views deliver per-site icons.
         if let Some(dm) = session.website_data_manager() {
             dm.set_favicons_enabled(true);
@@ -231,6 +245,83 @@ impl WebKitEngine {
     /// path so it gets a fresh id and record. Used to retry a failed download.
     pub fn retry_download(&self, source: &str) {
         self.session.download_uri(source);
+    }
+
+    /// Clear website data on the persistent session, reporting completion via the
+    /// mailbox. The `Site` scope removes only records for `host` (and its
+    /// subdomains); other scopes clear that category across all sites for all
+    /// time. The ephemeral session is memory-only and never touched.
+    pub fn clear_website_data(&self, scope: ClearScope, host: Option<String>, mailbox: Mailbox) {
+        let label = clear_label(scope, host.as_deref());
+        let Some(manager) = self.session.website_data_manager() else {
+            mailbox.send(Msg::DataCleared {
+                label,
+                result: Err("no website data manager".to_string()),
+            });
+            return;
+        };
+        let types = clear_types(scope);
+        match host {
+            Some(host) => {
+                // Per-site: fetch the records, keep those for this host, remove them.
+                let remove_manager = manager.clone();
+                manager.fetch(
+                    types,
+                    None::<&gtk4::gio::Cancellable>,
+                    move |result| match result {
+                        Ok(data) => {
+                            let matching: Vec<&WebsiteData> = data
+                                .iter()
+                                .filter(|d| {
+                                    d.name().is_some_and(|n| {
+                                        let n = n.as_str();
+                                        n == host || n.ends_with(&format!(".{host}"))
+                                    })
+                                })
+                                .collect();
+                            if matching.is_empty() {
+                                mailbox.send(Msg::DataCleared {
+                                    label,
+                                    result: Ok(()),
+                                });
+                                return;
+                            }
+                            let done = mailbox.clone();
+                            let done_label = label.clone();
+                            remove_manager.remove(
+                                types,
+                                &matching,
+                                None::<&gtk4::gio::Cancellable>,
+                                move |res| {
+                                    done.send(Msg::DataCleared {
+                                        label: done_label,
+                                        result: res.map_err(|e| e.to_string()),
+                                    });
+                                },
+                            );
+                        }
+                        Err(e) => mailbox.send(Msg::DataCleared {
+                            label,
+                            result: Err(e.to_string()),
+                        }),
+                    },
+                );
+            }
+            None => {
+                // Category clear across all sites, for all time (timespan 0).
+                manager.clear(
+                    types,
+                    glib::TimeSpan(0),
+                    None::<&gtk4::gio::Cancellable>,
+                    move |res| {
+                        mailbox.send(Msg::DataCleared {
+                            label,
+                            result: res.map_err(|e| e.to_string()),
+                        });
+                    },
+                );
+            }
+        }
     }
 
     /// Return the shared ephemeral session, creating and wiring it on first use.
@@ -803,6 +894,32 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// Map a clear scope to the WebKit website-data types it removes.
+fn clear_types(scope: ClearScope) -> WebsiteDataTypes {
+    match scope {
+        ClearScope::All | ClearScope::Site => WebsiteDataTypes::ALL,
+        ClearScope::Cookies => WebsiteDataTypes::COOKIES | WebsiteDataTypes::HSTS_CACHE,
+        ClearScope::Cache => {
+            WebsiteDataTypes::MEMORY_CACHE
+                | WebsiteDataTypes::DISK_CACHE
+                | WebsiteDataTypes::DOM_CACHE
+                | WebsiteDataTypes::OFFLINE_APPLICATION_CACHE
+        }
+        ClearScope::Storage => WebsiteDataTypes::SESSION_STORAGE | WebsiteDataTypes::LOCAL_STORAGE,
+    }
+}
+
+/// A human label for a clear scope, used in the completion message.
+fn clear_label(scope: ClearScope, host: Option<&str>) -> String {
+    match scope {
+        ClearScope::All => "all data".to_string(),
+        ClearScope::Cookies => "cookies".to_string(),
+        ClearScope::Cache => "cache".to_string(),
+        ClearScope::Storage => "storage".to_string(),
+        ClearScope::Site => format!("data for {}", host.unwrap_or("site")),
+    }
 }
 
 /// Build a settings object for a view. Each view gets its own so JavaScript can

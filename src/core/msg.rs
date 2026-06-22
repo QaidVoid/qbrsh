@@ -80,6 +80,11 @@ pub enum Msg {
     /// A favicon became available or changed (the icon itself lives in the
     /// GUI-side store; this only triggers a tab-list redraw).
     FaviconChanged,
+    /// A website-data clear finished; carries a human label and the outcome.
+    DataCleared {
+        label: String,
+        result: Result<(), String>,
+    },
     /// The configuration file was reloaded from disk. Boxed because `Config` is
     /// large relative to the other message variants.
     ConfigLoaded(Box<Config>),

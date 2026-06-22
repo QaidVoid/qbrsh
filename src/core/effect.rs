@@ -5,6 +5,7 @@
 //! executes afterwards. Because effects are plain data, `update` can be unit-tested
 //! by asserting on the returned effects without any GTK or engine present.
 
+use crate::core::command::ClearScope;
 use crate::core::msg::{JsPurpose, RequestId};
 use crate::core::state::{PaneId, Permissions, SitePreferences, TabId};
 use std::path::PathBuf;
@@ -118,6 +119,12 @@ pub enum Effect {
     OpenPath { path: PathBuf },
     /// Open the folder containing a finished download's file.
     RevealPath { path: PathBuf },
+    /// Clear website data of `scope` on the persistent session. `host` is set
+    /// only for the per-site scope.
+    ClearData {
+        scope: ClearScope,
+        host: Option<String>,
+    },
     /// Reload the configuration file from disk.
     ReloadConfig,
     /// Persist a named session's tab URLs.

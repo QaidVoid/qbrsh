@@ -6,7 +6,9 @@
 //! messages (see [`Msg::JsResult`]).
 
 use crate::core::bindings::build_bindings;
-use crate::core::command::{Command, HintTarget, JsToggle, OpenTarget, ScrollDir, YankWhat};
+use crate::core::command::{
+    ClearScope, Command, HintTarget, JsToggle, OpenTarget, ScrollDir, YankWhat,
+};
 use crate::core::completion::{CompletionItem, complete};
 use crate::core::effect::{Effect, MessageLevel};
 use crate::core::key::{Key, display_sequence, parse_key_string};
@@ -439,6 +441,14 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
 
         // The favicon itself lives in the GUI-side store; just redraw the rows.
         Msg::FaviconChanged => vec![Effect::RenderTabs],
+
+        Msg::DataCleared { label, result } => {
+            let (level, text) = match result {
+                Ok(()) => (MessageLevel::Info, format!("cleared {label}")),
+                Err(e) => (MessageLevel::Error, format!("clear {label} failed: {e}")),
+            };
+            vec![Effect::ShowMessage { level, text }]
+        }
     }
 }
 
@@ -1524,6 +1534,27 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
         }
 
+        Command::ClearData(scope) => {
+            // The per-site scope needs the active tab's registrable domain.
+            let host = if scope == ClearScope::Site {
+                match state
+                    .tabs
+                    .active()
+                    .and_then(|t| crate::adblock::site_of(&t.url))
+                {
+                    Some(host) => Some(host),
+                    None => {
+                        return vec![Effect::ShowMessage {
+                            level: MessageLevel::Error,
+                            text: "no site to clear for the active tab".to_string(),
+                        }];
+                    }
+                }
+            } else {
+                None
+            };
+            vec![Effect::ClearData { scope, host }]
+        }
         Command::SiteJavascript(toggle) => site_javascript(state, toggle),
         Command::TabsToggle => {
             state.tabs_collapsed = !state.tabs_collapsed;
@@ -2066,6 +2097,58 @@ mod tests {
             }),
         );
         assert!(!state.site_prefs.javascript_default);
+    }
+
+    #[test]
+    fn clear_category_emits_effect_without_host() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::ClearData(ClearScope::Cookies)),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ClearData {
+                scope: ClearScope::Cookies,
+                host: None
+            }
+        )));
+    }
+
+    #[test]
+    fn clear_site_uses_active_host() {
+        let mut state = state_with_tab(); // active tab is https://example.com
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::ClearData(ClearScope::Site)),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ClearData { scope: ClearScope::Site, host: Some(h) } if h == "example.com"
+        )));
+    }
+
+    #[test]
+    fn clear_site_without_a_site_errors() {
+        let mut state = state_with_tab();
+        let id = state.tabs.active_id().unwrap();
+        state.tabs.get_mut(id).unwrap().url = "about:blank".to_string();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::ClearData(ClearScope::Site)),
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::ClearData { .. }))
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ShowMessage {
+                level: MessageLevel::Error,
+                ..
+            }
+        )));
     }
 
     #[test]

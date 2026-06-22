@@ -71,7 +71,7 @@ selected).
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
-`:tabs-toggle`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
+`:tabs-toggle`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
 `:permissions`, `:downloads`, `:history`, `:split`, `:vsplit`, `:close-pane`,
 `:only-pane`, `:focus-pane`, `:focus-pane-prev`, `:quit`.
 
@@ -79,6 +79,10 @@ Browsing is configurable: named search engines with bang prefixes
 (`:open gh ripgrep`), a default engine, remappable keybindings (`[bindings]` plus
 `:bind`/`:unbind`), a configurable new-tab page and user-agent, and a per-domain
 JavaScript toggle. See `docs/guide/configuration.md`.
+
+`:clear [what]` clears website data on the persistent session, where `what` is
+`all` (default), `cookies`, `cache`, `storage`, or `site` (only the active tab's
+domain). It is immediate and not confirmed, so clearing cookies signs you out.
 
 `:private [url]` (bound to `,p`) opens a private tab on an ephemeral session:
 its cookies, cache, and site data live only in memory and never touch disk, it

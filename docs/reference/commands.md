@@ -61,6 +61,7 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | --- | --- |
 | `set <key> <value>` | change a setting at runtime |
 | `config-source` | reload the config file |
+| `clear [all\|cookies\|cache\|storage\|site]` | clear website data (default all) |
 | `darkmode` | toggle web-content dark mode |
 | `js-enable` / `js-disable` / `js-toggle` | change JavaScript for the current site |
 | `tabs-toggle` | collapse or expand the tab sidebar |

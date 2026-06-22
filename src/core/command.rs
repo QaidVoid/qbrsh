@@ -41,6 +41,21 @@ pub enum JsToggle {
     Toggle,
 }
 
+/// What website data a `:clear` command removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearScope {
+    /// Every category, across all sites.
+    All,
+    /// Cookies (and HSTS state), across all sites.
+    Cookies,
+    /// Caches (memory, disk, DOM, offline app), across all sites.
+    Cache,
+    /// Local and session storage, across all sites.
+    Storage,
+    /// Every category, but only for the active tab's site.
+    Site,
+}
+
 /// What following a hint does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HintTarget {
@@ -161,6 +176,8 @@ pub enum Command {
     SiteJavascript(JsToggle),
     /// Toggle the tab sidebar between expanded and collapsed.
     TabsToggle,
+    /// Clear website data of the given scope.
+    ClearData(ClearScope),
     /// Bind a key sequence to a command for the running session.
     Bind { keys: String, command: String },
     /// Remove the binding for a key sequence.
@@ -294,6 +311,14 @@ impl Command {
             "js-disable" => Command::SiteJavascript(JsToggle::Disable),
             "js-toggle" => Command::SiteJavascript(JsToggle::Toggle),
             "tabs-toggle" => Command::TabsToggle,
+            "clear" => Command::ClearData(match rest.first() {
+                None | Some(&"all") => ClearScope::All,
+                Some(&"cookies") => ClearScope::Cookies,
+                Some(&"cache") => ClearScope::Cache,
+                Some(&"storage") => ClearScope::Storage,
+                Some(&"site") => ClearScope::Site,
+                Some(other) => return Err(format!("unknown clear scope: {other}")),
+            }),
             "bind" => {
                 let keys = rest
                     .first()
@@ -489,6 +514,10 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("js-disable", "Disable JavaScript for the current site"),
     ("js-toggle", "Toggle JavaScript for the current site"),
     ("tabs-toggle", "Collapse or expand the tab sidebar"),
+    (
+        "clear",
+        "Clear website data (all/cookies/cache/storage/site)",
+    ),
     ("bind", "Bind a key sequence to a command"),
     ("unbind", "Remove a key binding"),
     ("bindings", "List the active key bindings"),
@@ -547,6 +576,23 @@ mod tests {
             value: "y".to_string(),
         }));
         assert!(!is_remote_safe(&Command::SessionSave("s".to_string())));
+    }
+
+    #[test]
+    fn clear_parses_scopes_and_rejects_unknown() {
+        assert!(matches!(
+            Command::parse("clear").unwrap(),
+            Command::ClearData(ClearScope::All)
+        ));
+        assert!(matches!(
+            Command::parse("clear cookies").unwrap(),
+            Command::ClearData(ClearScope::Cookies)
+        ));
+        assert!(matches!(
+            Command::parse("clear site").unwrap(),
+            Command::ClearData(ClearScope::Site)
+        ));
+        assert!(Command::parse("clear bogus").is_err());
     }
 
     #[test]
