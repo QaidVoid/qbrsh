@@ -67,7 +67,7 @@ selected).
 
 ## Commands
 
-`:open`, `:tabopen`, `:back`, `:forward`, `:reload`, `:tab-close/next/prev/focus`,
+`:open`, `:tabopen`, `:private`, `:back`, `:forward`, `:reload`, `:tab-close/next/prev/focus`,
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
@@ -79,6 +79,15 @@ Browsing is configurable: named search engines with bang prefixes
 (`:open gh ripgrep`), a default engine, remappable keybindings (`[bindings]` plus
 `:bind`/`:unbind`), a configurable new-tab page and user-agent, and a per-domain
 JavaScript toggle. See `docs/guide/configuration.md`.
+
+`:private [url]` (bound to `,p`) opens a private tab on an ephemeral session:
+its cookies, cache, and site data live only in memory and never touch disk, it
+records no history, and it is excluded from session autosave and named sessions.
+Privacy is inherited, so a link opened in a new tab from a private page (and tab
+clone or undo-close) stays private. All private tabs share one ephemeral session
+for the run. Known limits: the session is released at process exit (not when the
+last private tab closes), and a per-site permission you grant from a private tab
+still persists to the on-disk permission store.
 
 Open tabs are listed vertically down the left of the window, each led by its
 site favicon: the active tab's row is highlighted, rows of tabs mounted in a pane

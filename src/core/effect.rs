@@ -44,6 +44,8 @@ pub enum Effect {
         id: TabId,
         uri: String,
         background: bool,
+        /// Build the view on the ephemeral (private) session.
+        private: bool,
     },
     /// Destroy the web view for a closed tab.
     CloseTab { tab: TabId },

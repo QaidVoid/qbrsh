@@ -102,6 +102,7 @@ pub fn default_bindings() -> BindingTrie {
     bind(",d", "darkmode");
     bind(",j", "js-toggle");
     bind(",t", "tabs-toggle");
+    bind(",p", "cmd-set-text :private ");
 
     // Panes (vim-style <C-w> prefix)
     bind("<C-w>s", "split");

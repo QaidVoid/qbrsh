@@ -39,6 +39,7 @@ followed. `Escape` cancels.
 | Key | Action |
 | --- | --- |
 | `t` | open a URL in a new tab |
+| `,p` | open a URL in a new private tab |
 | `J` / `K` | next / previous tab |
 | `d` | close the tab |
 | `u` | reopen the last closed tab |

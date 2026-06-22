@@ -54,9 +54,9 @@ type CancelledDownloads = Rc<RefCell<HashSet<u64>>>;
 /// controller on pages with very many matches.
 const MAX_FIND_MATCHES: u32 = 1000;
 
-/// Registry of created views, each weakly held and tagged with its creation-time
-/// site key for same-site web-process grouping.
-type ViewRegistry = Rc<RefCell<Vec<(Option<String>, glib::object::WeakRef<WebView>)>>>;
+/// Registry of created views, each weakly held and tagged with its privacy and
+/// creation-time site key, for same-site same-privacy web-process grouping.
+type ViewRegistry = Rc<RefCell<Vec<(bool, Option<String>, glib::object::WeakRef<WebView>)>>>;
 
 /// Factory that builds web views, each with its own settings object (so
 /// JavaScript can differ per site) over a shared network session.
@@ -73,6 +73,13 @@ pub struct WebKitEngine {
     /// memory-pressure settings. Views relate to a live sibling and inherit it.
     context: WebContext,
     session: NetworkSession,
+    /// Lazily created ephemeral session shared by all private tabs; its data is
+    /// memory-only and released at process exit.
+    ephemeral: RefCell<Option<NetworkSession>>,
+    /// Downloads directory, kept for wiring the ephemeral session's downloads.
+    downloads_dir: PathBuf,
+    /// Shared download id counter, so ids stay unique across both sessions.
+    dl_next_id: Rc<Cell<u64>>,
     blocklist: Rc<HashSet<String>>,
     permissions: PermissionMirror,
     /// Kept alive for the duration of the engine; backs the compiled filter.
@@ -127,7 +134,7 @@ impl WebKitEngine {
             None::<&gtk4::gio::Cancellable>,
             move |result| match result {
                 Ok(compiled) => {
-                    for view in views_cb.borrow().iter().filter_map(|(_, w)| w.upgrade()) {
+                    for view in views_cb.borrow().iter().filter_map(|(_, _, w)| w.upgrade()) {
                         if let Some(ucm) = view.user_content_manager() {
                             ucm.add_filter(&compiled);
                         }
@@ -160,36 +167,21 @@ impl WebKitEngine {
         }
 
         // Save downloads to the downloads directory with a safe, de-duplicated
-        // name, reporting lifecycle events as messages.
-        let dl_dir = downloads_dir.to_path_buf();
-        let dl_mailbox = mailbox.clone();
+        // name, reporting lifecycle events as messages. The same handler is wired
+        // onto the ephemeral session when it is created, so private-tab downloads
+        // are tracked too; the id counter and maps are shared across sessions.
+        let downloads_dir = downloads_dir.to_path_buf();
         let dl_id = Rc::new(Cell::new(0u64));
         let dl_map: DownloadMap = Rc::new(RefCell::new(HashMap::new()));
         let dl_cancelled: CancelledDownloads = Rc::new(RefCell::new(HashSet::new()));
-        // Clones moved into the per-download-started closure; the originals are
-        // kept for the engine struct (cancel/retry).
-        let dl_started_map = dl_map.clone();
-        let dl_started_cancelled = dl_cancelled.clone();
-        session.connect_download_started(move |_session, download| {
-            let id = dl_id.get();
-            dl_id.set(id + 1);
-            // The original request URI is available now; it is the source used
-            // for retry and surfaced to core alongside the chosen destination.
-            let source = download
-                .request()
-                .and_then(|r| r.uri())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            wire_download(
-                download,
-                id,
-                source,
-                dl_dir.clone(),
-                dl_mailbox.clone(),
-                dl_started_map.clone(),
-                dl_started_cancelled.clone(),
-            );
-        });
+        connect_download_handler(
+            &session,
+            downloads_dir.clone(),
+            mailbox.clone(),
+            dl_id.clone(),
+            dl_map.clone(),
+            dl_cancelled.clone(),
+        );
 
         Self {
             debug,
@@ -198,6 +190,9 @@ impl WebKitEngine {
             favicons,
             context,
             session,
+            ephemeral: RefCell::new(None),
+            downloads_dir,
+            dl_next_id: dl_id,
             blocklist,
             permissions,
             _filter_store: store,
@@ -238,20 +233,52 @@ impl WebKitEngine {
         self.session.download_uri(source);
     }
 
+    /// Return the shared ephemeral session, creating and wiring it on first use.
+    fn ephemeral_session(&self, mailbox: &Mailbox) -> NetworkSession {
+        if let Some(session) = self.ephemeral.borrow().as_ref() {
+            return session.clone();
+        }
+        let session = NetworkSession::new_ephemeral();
+        session.set_tls_errors_policy(TLSErrorsPolicy::Fail);
+        if let Some(dm) = session.website_data_manager() {
+            dm.set_favicons_enabled(true);
+        }
+        connect_download_handler(
+            &session,
+            self.downloads_dir.clone(),
+            mailbox.clone(),
+            self.dl_next_id.clone(),
+            self.downloads.clone(),
+            self.cancelled_downloads.clone(),
+        );
+        *self.ephemeral.borrow_mut() = Some(session.clone());
+        session
+    }
+
     /// Build a view for `tab` loading `uri`, wiring its signals to messages on
-    /// `mailbox`. The view shares a web process only with a live same-site view,
-    /// so different sites stay in separate renderer processes.
-    pub fn create_view(&self, tab: TabId, uri: &str, mailbox: Mailbox) -> Box<dyn EngineView> {
+    /// `mailbox`. The view shares a web process only with a live same-site view
+    /// of the same privacy, so different sites (and private vs normal tabs) stay
+    /// in separate renderer processes and sessions. A `private` view loads on the
+    /// ephemeral session.
+    pub fn create_view(
+        &self,
+        tab: TabId,
+        uri: &str,
+        private: bool,
+        mailbox: Mailbox,
+    ) -> Box<dyn EngineView> {
         let site = adblock::site_of(uri);
-        // Prune dead references and relate only to a live view of the same site.
+        // Prune dead references and relate only to a live view of the same site
+        // and the same privacy (relating across privacy would leak the session,
+        // since `related_view` makes WebKit ignore the network session).
         let related = {
             let mut views = self.views.borrow_mut();
-            views.retain(|(_, w)| w.upgrade().is_some());
+            views.retain(|(_, _, w)| w.upgrade().is_some());
             site.as_deref().and_then(|s| {
                 views
                     .iter()
-                    .find(|(vs, _)| vs.as_deref() == Some(s))
-                    .and_then(|(_, w)| w.upgrade())
+                    .find(|(p, vs, _)| *p == private && vs.as_deref() == Some(s))
+                    .and_then(|(_, _, w)| w.upgrade())
             })
         };
 
@@ -262,15 +289,20 @@ impl WebKitEngine {
         if let Some(host) = adblock::host_of(uri) {
             settings.set_enable_javascript(self.site_prefs.borrow().javascript_for(host));
         }
-        let builder = WebView::builder()
-            .settings(&settings)
-            .network_session(&self.session);
-        // A same-site related view shares its sibling's web process and context;
-        // an unrelated (new-site) view sets the shared context explicitly and
-        // gets its own process.
+        let builder = WebView::builder().settings(&settings);
+        // A same-site, same-privacy related view shares its sibling's web process
+        // and session. An unrelated view sets the shared context plus the session
+        // for its privacy (the persistent session, or the ephemeral one).
         let builder = match related {
             Some(ref r) => builder.related_view(r),
-            None => builder.web_context(&self.context),
+            None => {
+                let session = if private {
+                    self.ephemeral_session(&mailbox)
+                } else {
+                    self.session.clone()
+                };
+                builder.web_context(&self.context).network_session(&session)
+            }
         };
         let view = builder.build();
         view.set_vexpand(true);
@@ -283,11 +315,14 @@ impl WebKitEngine {
         {
             ucm.add_filter(compiled);
         }
-        self.views.borrow_mut().push((site, view.downgrade()));
+        self.views
+            .borrow_mut()
+            .push((private, site, view.downgrade()));
 
         connect_signals(
             &view,
             tab,
+            private,
             mailbox,
             self.session.clone(),
             self.blocklist.clone(),
@@ -306,6 +341,7 @@ impl WebKitEngine {
 fn connect_signals(
     view: &WebView,
     tab: TabId,
+    private: bool,
     mailbox: Mailbox,
     session: NetworkSession,
     blocklist: Rc<HashSet<String>>,
@@ -500,8 +536,14 @@ fn connect_signals(
             if is_unsafe_open_target(&uri) {
                 eprintln!("[qbrsh] blocked new-window open to unsafe target: {uri}");
             } else {
+                // A new tab opened from a private page stays private.
+                let target = if private {
+                    OpenTarget::PrivateTab
+                } else {
+                    OpenTarget::Tab
+                };
                 mb.send(Msg::Command(Command::Open {
-                    target: OpenTarget::Tab,
+                    target,
                     input: uri.to_string(),
                 }));
             }
@@ -537,6 +579,39 @@ fn connect_signals(
             _ => return,
         };
         mb.send(Msg::InputFocusChanged { tab, focused });
+    });
+}
+
+/// Attach the download-started handler to a session: each download gets a unique
+/// id (from the shared counter) and is wired for tracking. Applied to both the
+/// persistent and the ephemeral session so downloads are tracked from any tab.
+fn connect_download_handler(
+    session: &NetworkSession,
+    dir: PathBuf,
+    mailbox: Mailbox,
+    next_id: Rc<Cell<u64>>,
+    downloads: DownloadMap,
+    cancelled: CancelledDownloads,
+) {
+    session.connect_download_started(move |_session, download| {
+        let id = next_id.get();
+        next_id.set(id + 1);
+        // The original request URI is the source used for retry and surfaced to
+        // core alongside the chosen destination.
+        let source = download
+            .request()
+            .and_then(|r| r.uri())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        wire_download(
+            download,
+            id,
+            source,
+            dir.clone(),
+            mailbox.clone(),
+            downloads.clone(),
+            cancelled.clone(),
+        );
     });
 }
 

@@ -13,6 +13,8 @@ pub enum OpenTarget {
     Current,
     /// Open in a new foreground tab.
     Tab,
+    /// Open in a new foreground private (ephemeral-session) tab.
+    PrivateTab,
 }
 
 /// Scroll direction for a `scroll` command.
@@ -204,6 +206,10 @@ impl Command {
             },
             "tabopen" | "t" => Command::Open {
                 target: OpenTarget::Tab,
+                input: arg,
+            },
+            "private" | "private-open" => Command::Open {
+                target: OpenTarget::PrivateTab,
                 input: arg,
             },
             "back" => Command::Back(count(1)),
@@ -427,6 +433,7 @@ fn parse_mode(arg: Option<&&str>) -> Result<Mode, String> {
 pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("open", "Open a URL or search in the current tab"),
     ("tabopen", "Open a URL or search in a new tab"),
+    ("private", "Open a URL or search in a new private tab"),
     ("back", "Go back in history"),
     ("forward", "Go forward in history"),
     ("reload", "Reload the page"),

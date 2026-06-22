@@ -82,6 +82,8 @@ pub struct Tab {
     pub crashed: bool,
     /// Page zoom level (1.0 = 100%).
     pub zoom: f64,
+    /// Whether the tab browses on the ephemeral (private) session.
+    pub private: bool,
 }
 
 impl Tab {
@@ -94,6 +96,7 @@ impl Tab {
             progress: 0.0,
             crashed: false,
             zoom: 1.0,
+            private: false,
         }
     }
 }
@@ -102,6 +105,8 @@ impl Tab {
 #[derive(Debug, Clone)]
 pub struct ClosedTab {
     pub url: String,
+    /// Whether the closed tab was private, so reopening preserves privacy.
+    pub private: bool,
 }
 
 /// Maximum number of closed tabs retained for undo.
@@ -135,7 +140,8 @@ impl Tabs {
         self.active().map(|t| t.id)
     }
 
-    /// The zero-based index of the active tab. Consumed by the tab-bar renderer.
+    /// The zero-based index of the active tab.
+    #[cfg(test)]
     pub fn active_index(&self) -> usize {
         self.active
     }
@@ -241,9 +247,28 @@ impl Tabs {
         self.undo_stack.pop()
     }
 
-    /// The URLs of all open tabs, in order.
-    pub fn urls(&self) -> Vec<String> {
-        self.tabs.iter().map(|t| t.url.clone()).collect()
+    /// The URLs of the non-private open tabs, in order. Private tabs are never
+    /// persisted to disk (autosave or named sessions).
+    pub fn persistable_urls(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|t| !t.private)
+            .map(|t| t.url.clone())
+            .collect()
+    }
+
+    /// The index into `persistable_urls` of the active tab, or 0 when the active
+    /// tab is private or there are no persistable tabs.
+    pub fn persistable_active_index(&self) -> usize {
+        match self.tabs.get(self.active) {
+            Some(active) if !active.private => self
+                .tabs
+                .iter()
+                .take(self.active)
+                .filter(|t| !t.private)
+                .count(),
+            _ => 0,
+        }
     }
 
     /// Iterate over all open tabs, in order.
@@ -254,6 +279,7 @@ impl Tabs {
     fn push_undo(&mut self, tab: &Tab) {
         self.undo_stack.push(ClosedTab {
             url: tab.url.clone(),
+            private: tab.private,
         });
         if self.undo_stack.len() > UNDO_LIMIT {
             self.undo_stack.remove(0);

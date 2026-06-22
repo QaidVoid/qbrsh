@@ -45,7 +45,8 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                         t.loading = false;
                         t.progress = 1.0;
                         let (uri, title) = (t.url.clone(), t.title.clone());
-                        if !uri.is_empty() && uri != "about:blank" {
+                        // Private tabs never record history.
+                        if !t.private && !uri.is_empty() && uri != "about:blank" {
                             effects.push(Effect::RecordHistory {
                                 uri: uri.clone(),
                                 title,
@@ -161,10 +162,16 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                                 text: format!("blocked unsafe link: {href}"),
                             }];
                         }
+                        // A hint opened from a private tab stays private.
+                        let target = if state.tabs.get(tab).is_some_and(|t| t.private) {
+                            OpenTarget::PrivateTab
+                        } else {
+                            OpenTarget::Tab
+                        };
                         return handle_command(
                             state,
                             Command::Open {
-                                target: OpenTarget::Tab,
+                                target,
                                 input: href,
                             },
                         );
@@ -276,7 +283,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
         Msg::SessionLoaded(urls) => {
             let mut effects = Vec::new();
             for url in urls {
-                effects.extend(open_tab(state, url, true));
+                effects.extend(open_tab(state, url, true, false));
             }
             effects
         }
@@ -802,7 +809,7 @@ fn open_history_tab(state: &mut State) -> Vec<Effect> {
     state.mode.leave();
     let mut effects = vec![Effect::RenderHistory, Effect::RenderStatus];
     let uri = normalize_target(&row.url, &state.config.search);
-    effects.extend(open_tab(state, uri, false));
+    effects.extend(open_tab(state, uri, false, false));
     effects
 }
 
@@ -1015,9 +1022,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             match target {
                 OpenTarget::Current => match state.tabs.active_id() {
                     Some(tab) => vec![Effect::LoadUri { tab, uri }],
-                    None => open_tab(state, uri, false),
+                    None => open_tab(state, uri, false, false),
                 },
-                OpenTarget::Tab => open_tab(state, uri, false),
+                OpenTarget::Tab => open_tab(state, uri, false, false),
+                OpenTarget::PrivateTab => open_tab(state, uri, false, true),
             }
         }
 
@@ -1107,14 +1115,14 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }],
         },
         Command::Undo => match state.tabs.undo() {
-            Some(closed) => open_tab(state, closed.url, false),
+            Some(closed) => open_tab(state, closed.url, false, closed.private),
             None => vec![Effect::ShowMessage {
                 level: MessageLevel::Info,
                 text: "no closed tabs to reopen".to_string(),
             }],
         },
-        Command::TabClone => match state.tabs.active().map(|t| t.url.clone()) {
-            Some(url) => open_tab(state, url, false),
+        Command::TabClone => match state.tabs.active().map(|t| (t.url.clone(), t.private)) {
+            Some((url, private)) => open_tab(state, url, false, private),
             None => Vec::new(),
         },
         Command::TabMove(delta) => {
@@ -1405,7 +1413,7 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
             vec![
                 Effect::SaveSession {
-                    urls: state.tabs.urls(),
+                    urls: state.tabs.persistable_urls(),
                     name: name.clone(),
                 },
                 Effect::ShowMessage {
@@ -1572,8 +1580,8 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
         }
 
         Command::Quit => {
-            let urls = state.tabs.urls();
-            let active = state.tabs.active_index();
+            let urls = state.tabs.persistable_urls();
+            let active = state.tabs.persistable_active_index();
             state.running = false;
             vec![Effect::SaveAutosave { urls, active }, Effect::Quit]
         }
@@ -1744,6 +1752,7 @@ fn split_focused(state: &mut State, dir: SplitDir) -> Vec<Effect> {
             id: new_id,
             uri: home,
             background: true,
+            private: false,
         },
         Effect::RenderLayout,
     ];
@@ -1751,17 +1760,19 @@ fn split_focused(state: &mut State, dir: SplitDir) -> Vec<Effect> {
     effects
 }
 
-fn open_tab(state: &mut State, uri: String, background: bool) -> Vec<Effect> {
+fn open_tab(state: &mut State, uri: String, background: bool, private: bool) -> Vec<Effect> {
     let id = state.tabs.open(&uri);
     let default_zoom = state.config.zoom.default;
     if let Some(t) = state.tabs.get_mut(id) {
         t.zoom = default_zoom;
+        t.private = private;
     }
     let mut effects = vec![
         Effect::OpenTab {
             id,
             uri: uri.clone(),
             background,
+            private,
         },
         Effect::FireHook {
             event: "tab_open".to_string(),
@@ -2077,6 +2088,112 @@ mod tests {
             effects
                 .iter()
                 .any(|e| matches!(e, Effect::SetTabWidth(220)))
+        );
+    }
+
+    #[test]
+    fn private_open_sets_flag_and_effect() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::PrivateTab,
+                input: "example.org".to_string(),
+            }),
+        );
+        assert!(state.tabs.active().unwrap().private);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::OpenTab { private: true, .. }))
+        );
+    }
+
+    #[test]
+    fn private_tab_records_no_history() {
+        let mut state = state_with_tab();
+        // The initial (normal) tab records history on load.
+        let normal = state.tabs.active_id().unwrap();
+        let effects = update(
+            &mut state,
+            Msg::Load {
+                tab: normal,
+                event: LoadEvent::Finished,
+            },
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::RecordHistory { .. }))
+        );
+        // A private tab does not.
+        update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::PrivateTab,
+                input: "secret.test".to_string(),
+            }),
+        );
+        let private = state.tabs.active_id().unwrap();
+        let effects = update(
+            &mut state,
+            Msg::Load {
+                tab: private,
+                event: LoadEvent::Finished,
+            },
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::RecordHistory { .. }))
+        );
+    }
+
+    #[test]
+    fn autosave_and_clone_undo_respect_privacy() {
+        let mut state = state_with_tab(); // one normal tab: https://example.com
+        update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::PrivateTab,
+                input: "secret.test".to_string(),
+            }),
+        );
+        // Cloning a private tab yields a private tab.
+        let effects = update(&mut state, Msg::Command(Command::TabClone));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::OpenTab { private: true, .. }))
+        );
+        // Quit autosaves only the non-private tab.
+        let effects = update(&mut state, Msg::Command(Command::Quit));
+        let urls = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::SaveAutosave { urls, .. } => Some(urls.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(urls, vec!["https://example.com".to_string()]);
+    }
+
+    #[test]
+    fn undo_reopens_private_tab_as_private() {
+        let mut state = state_with_tab();
+        update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::PrivateTab,
+                input: "x.test".to_string(),
+            }),
+        );
+        update(&mut state, Msg::Command(Command::TabClose));
+        let effects = update(&mut state, Msg::Command(Command::Undo));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::OpenTab { private: true, .. }))
         );
     }
 

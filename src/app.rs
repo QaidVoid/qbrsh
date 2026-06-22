@@ -121,8 +121,13 @@ impl GtkEffectRunner {
         } else {
             format!("  {pending}")
         };
+        let private = if state.tabs.active().is_some_and(|t| t.private) {
+            "  [private]"
+        } else {
+            ""
+        };
         self.ui.statusbar.set_text(&format!(
-            "-- {mode} --  {url}{progress}{scroll}{search}{pending}"
+            "-- {mode} --{private}  {url}{progress}{scroll}{search}{pending}"
         ));
 
         if state.command_line.active {
@@ -148,6 +153,7 @@ impl GtkEffectRunner {
              #qbrsh-tabs .tab-row {{ padding: 3px 8px; }}\n\
              #qbrsh-tabs .tab-collapsed {{ padding: 3px 0; }}\n\
              #qbrsh-tabs .tab-mounted {{ border-left: 2px solid {accent}; }}\n\
+             #qbrsh-tabs .tab-private {{ border-right: 3px solid {accent}; font-style: italic; }}\n\
              #qbrsh-tabs .tab-active {{ background-color: {accent}; }}\n\
              #qbrsh-tabs .tab-active label {{ color: {bg}; }}\n\
              #qbrsh-layout {{ background-color: {bg}; }}\n\
@@ -425,6 +431,9 @@ impl GtkEffectRunner {
             if split && state.layout.pane_with_tab(tab.id).is_some() {
                 row.add_css_class("tab-mounted");
             }
+            if tab.private {
+                row.add_css_class("tab-private");
+            }
 
             let icon = match favicons.get(&tab.id) {
                 Some(texture) => gtk4::Image::from_paintable(Some(texture)),
@@ -549,8 +558,11 @@ impl EffectRunner for GtkEffectRunner {
                 id,
                 uri,
                 background: _,
+                private,
             } => {
-                let view = self.engine.create_view(id, &uri, self.mailbox.clone());
+                let view = self
+                    .engine
+                    .create_view(id, &uri, private, self.mailbox.clone());
                 if let Some(t) = state.tabs.get(id) {
                     view.set_zoom(t.zoom);
                 }
@@ -881,7 +893,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         if let Some(t) = state.tabs.get_mut(id) {
             t.zoom = default_zoom;
         }
-        let view = engine.create_view(id, &uri, mailbox.clone());
+        let view = engine.create_view(id, &uri, false, mailbox.clone());
         view.set_zoom(default_zoom);
         view.load_uri(&uri);
         // Wrap each view in a persistent box the layout reparents.

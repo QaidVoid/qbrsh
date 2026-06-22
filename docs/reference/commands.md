@@ -10,6 +10,7 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | --- | --- |
 | `open <url>` | open a URL or search term in the current tab |
 | `tabopen <url>` | open in a new tab |
+| `private [url]` | open in a new private (ephemeral) tab |
 | `back` / `forward` | move through history |
 | `reload` / `reload --force` | reload, optionally bypassing cache |
 | `stop` | stop loading |
