@@ -155,39 +155,41 @@ impl Tabs {
         self.tabs.iter().find(|t| t.id == id)
     }
 
-    /// Focus the last tab (used after opening a foreground tab).
-    pub fn focus_last(&mut self) {
-        if !self.tabs.is_empty() {
-            self.active = self.tabs.len() - 1;
+    /// The id of the tab at a 1-based index, without changing focus.
+    pub fn id_at_1based(&self, index: usize) -> Option<TabId> {
+        self.tabs.get(index.checked_sub(1)?).map(|t| t.id)
+    }
+
+    /// Set the active tab by id. Returns `true` if the tab exists.
+    pub fn focus_id(&mut self, id: TabId) -> bool {
+        if let Some(idx) = self.tabs.iter().position(|t| t.id == id) {
+            self.active = idx;
+            true
+        } else {
+            false
         }
     }
 
-    /// Focus a tab by 1-based index. Returns the focused tab id, if valid.
-    pub fn focus_index_1based(&mut self, index: usize) -> Option<TabId> {
-        let idx = index.checked_sub(1)?;
-        let tab = self.tabs.get(idx)?;
-        self.active = idx;
-        Some(tab.id)
-    }
-
-    /// Move focus forward `count` tabs, wrapping. Returns the new active id.
-    pub fn next(&mut self, count: u32) -> Option<TabId> {
+    /// The id of the tab `count` positions after the active one, without
+    /// changing focus. Wraps around.
+    pub fn peek_next(&self, count: u32) -> Option<TabId> {
         if self.tabs.is_empty() {
             return None;
         }
-        self.active = (self.active + count as usize) % self.tabs.len();
-        self.active_id()
+        let idx = (self.active + count as usize) % self.tabs.len();
+        self.tabs.get(idx).map(|t| t.id)
     }
 
-    /// Move focus backward `count` tabs, wrapping. Returns the new active id.
-    pub fn prev(&mut self, count: u32) -> Option<TabId> {
+    /// The id of the tab `count` positions before the active one, without
+    /// changing focus. Wraps around.
+    pub fn peek_prev(&self, count: u32) -> Option<TabId> {
         if self.tabs.is_empty() {
             return None;
         }
         let len = self.tabs.len();
         let back = (count as usize) % len;
-        self.active = (self.active + len - back) % len;
-        self.active_id()
+        let idx = (self.active + len - back) % len;
+        self.tabs.get(idx).map(|t| t.id)
     }
 
     /// Close the active tab, retaining it for undo. Returns its id and the id to
@@ -255,6 +257,236 @@ impl Tabs {
         });
         if self.undo_stack.len() > UNDO_LIMIT {
             self.undo_stack.remove(0);
+        }
+    }
+}
+
+/// Split direction. `Horizontal` is the `:split` case (a horizontal divider,
+/// panes stacked top/bottom); `Vertical` is `:vsplit` (a vertical divider,
+/// panes side by side). The mapping to `GtkPaned` orientation lives in the
+/// runner, in one place, to keep the naming unambiguous.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitDir {
+    Horizontal,
+    Vertical,
+}
+
+/// Stable identifier for a layout pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PaneId(pub u64);
+
+/// A node in the layout tree: a leaf holding a pane, or a binary split.
+#[derive(Debug, Clone)]
+pub enum LayoutNode {
+    Leaf(PaneId),
+    Split {
+        dir: SplitDir,
+        ratio: f64,
+        a: Box<LayoutNode>,
+        b: Box<LayoutNode>,
+    },
+}
+
+/// A single pane slot referencing the tab whose view it displays.
+#[derive(Debug, Clone)]
+pub struct Pane {
+    pub id: PaneId,
+    pub tab: TabId,
+}
+
+/// The pane layout: a binary tree of splits plus a flat pane lookup and the
+/// focused pane. The layout always holds at least one pane once initialized.
+#[derive(Debug)]
+pub struct Layout {
+    pub root: LayoutNode,
+    pub panes: Vec<Pane>,
+    pub focused: PaneId,
+    next_id: u64,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        // An empty placeholder, only used transiently by `State::default`. Real
+        // layouts are created with [`Layout::new`] in startup.
+        Self {
+            root: LayoutNode::Leaf(PaneId(0)),
+            panes: Vec::new(),
+            focused: PaneId(0),
+            next_id: 1,
+        }
+    }
+}
+
+impl Layout {
+    /// Create a single-pane layout showing `first_tab`, focused.
+    pub fn new(first_tab: TabId) -> Self {
+        let id = PaneId(0);
+        Self {
+            root: LayoutNode::Leaf(id),
+            panes: vec![Pane { id, tab: first_tab }],
+            focused: id,
+            next_id: 1,
+        }
+    }
+
+    /// Whether the layout has any panes (the default placeholder is empty).
+    pub fn is_empty(&self) -> bool {
+        self.panes.is_empty()
+    }
+
+    /// The focused pane, if any.
+    pub fn focused_pane(&self) -> Option<&Pane> {
+        self.panes.iter().find(|p| p.id == self.focused)
+    }
+
+    /// The pane currently displaying `tab`, if any.
+    pub fn pane_with_tab(&self, tab: TabId) -> Option<PaneId> {
+        self.panes.iter().find(|p| p.tab == tab).map(|p| p.id)
+    }
+
+    /// Replace the focused pane with a split, adding a new pane showing
+    /// `new_tab` and focusing it. The old pane becomes the `a` child. Returns
+    /// the new pane id.
+    pub fn split_focused(&mut self, dir: SplitDir, new_tab: TabId) -> Option<PaneId> {
+        if self.is_empty() {
+            return None;
+        }
+        let old = self.focused;
+        let new_id = PaneId(self.next_id);
+        self.next_id += 1;
+        replace_leaf(&mut self.root, old, |id| LayoutNode::Split {
+            dir,
+            ratio: 0.5,
+            a: Box::new(LayoutNode::Leaf(id)),
+            b: Box::new(LayoutNode::Leaf(new_id)),
+        });
+        let idx = self.panes.iter().position(|p| p.id == old)?;
+        self.panes.insert(
+            idx + 1,
+            Pane {
+                id: new_id,
+                tab: new_tab,
+            },
+        );
+        self.focused = new_id;
+        Some(new_id)
+    }
+
+    /// Remove the focused pane and collapse its parent split, keeping at least
+    /// one pane. The pane's tab is NOT removed (it becomes a background tab).
+    /// Returns the survivor pane that took focus.
+    pub fn close_focused(&mut self) -> Option<PaneId> {
+        if self.panes.len() <= 1 {
+            return None;
+        }
+        let removed = self.focused;
+        let idx = self.panes.iter().position(|p| p.id == removed)?;
+        self.root = remove_leaf(self.root.clone(), removed)?;
+        self.panes.retain(|p| p.id != removed);
+        let survivor = self.panes[idx.min(self.panes.len() - 1)].id;
+        self.focused = survivor;
+        Some(survivor)
+    }
+
+    /// Keep only the focused pane; drop every other pane (their tabs stay).
+    pub fn only(&mut self) {
+        if self.is_empty() {
+            return;
+        }
+        let focused = self.focused_pane().cloned();
+        if let Some(p) = focused {
+            self.root = LayoutNode::Leaf(p.id);
+            self.panes = vec![p];
+        }
+    }
+
+    /// Cycle focus to the next pane (wrapping). Returns the newly focused pane.
+    pub fn focus_next(&mut self) -> Option<PaneId> {
+        self.shift_focus(1)
+    }
+
+    /// Cycle focus to the previous pane (wrapping). Returns the newly focused pane.
+    pub fn focus_prev(&mut self) -> Option<PaneId> {
+        self.shift_focus(self.panes.len().saturating_sub(1))
+    }
+
+    fn shift_focus(&mut self, step: usize) -> Option<PaneId> {
+        if self.panes.is_empty() {
+            return None;
+        }
+        let idx = self.panes.iter().position(|p| p.id == self.focused)?;
+        let next = (idx + step) % self.panes.len();
+        self.focused = self.panes[next].id;
+        Some(self.focused)
+    }
+
+    /// Replace the focused pane's tab with `tab`, returning the evicted tab
+    /// (which becomes a background tab).
+    pub fn swap_focused_tab(&mut self, tab: TabId) -> Option<TabId> {
+        let pane = self.panes.iter_mut().find(|p| p.id == self.focused)?;
+        let old = pane.tab;
+        pane.tab = tab;
+        Some(old)
+    }
+}
+
+/// Whether `node` is or contains the leaf `target`.
+fn contains(node: &LayoutNode, target: PaneId) -> bool {
+    match node {
+        LayoutNode::Leaf(id) => *id == target,
+        LayoutNode::Split { a, b, .. } => contains(a, target) || contains(b, target),
+    }
+}
+
+/// Replace `Leaf(target)` anywhere in the tree with `f(target)`. Does nothing
+/// if the target leaf is absent.
+fn replace_leaf(node: &mut LayoutNode, target: PaneId, f: impl FnOnce(PaneId) -> LayoutNode) {
+    match node {
+        LayoutNode::Leaf(id) if *id == target => {
+            let id = *id;
+            *node = f(id);
+        }
+        LayoutNode::Split { a, b, .. } => {
+            if contains(a, target) {
+                replace_leaf(a, target, f);
+            } else {
+                replace_leaf(b, target, f);
+            }
+        }
+        LayoutNode::Leaf(_) => {}
+    }
+}
+
+/// Return the tree with `Leaf(target)` removed and its parent split collapsed
+/// to the surviving sibling. Returns `None` if the whole tree was the target
+/// leaf (caller must keep at least one pane).
+fn remove_leaf(node: LayoutNode, target: PaneId) -> Option<LayoutNode> {
+    match node {
+        LayoutNode::Leaf(id) => (id != target).then_some(LayoutNode::Leaf(id)),
+        LayoutNode::Split { dir, ratio, a, b } => {
+            if contains(&a, target) {
+                match remove_leaf(*a, target) {
+                    None => Some(*b),
+                    Some(na) => Some(LayoutNode::Split {
+                        dir,
+                        ratio,
+                        a: Box::new(na),
+                        b,
+                    }),
+                }
+            } else if contains(&b, target) {
+                match remove_leaf(*b, target) {
+                    None => Some(*a),
+                    Some(nb) => Some(LayoutNode::Split {
+                        dir,
+                        ratio,
+                        a,
+                        b: Box::new(nb),
+                    }),
+                }
+            } else {
+                Some(LayoutNode::Split { dir, ratio, a, b })
+            }
         }
     }
 }
@@ -772,6 +1004,8 @@ pub struct State {
     pub dl_view: DownloadViewState,
     /// State of the history management list view.
     pub history_view: HistoryViewState,
+    /// The pane layout. Empty until initialized in startup (`Layout::new`).
+    pub layout: Layout,
     /// The last in-page search, for `n`/`N` repeat.
     pub last_search: Option<Search>,
     /// Active/recent downloads by id, retained until cleared from the view.
@@ -883,5 +1117,92 @@ mod permission_tests {
         let text = toml::to_string_pretty(&p).unwrap();
         let back: Permissions = toml::from_str(&text).unwrap();
         assert_eq!(p, back);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn tid(n: u64) -> TabId {
+        TabId(n)
+    }
+
+    #[test]
+    fn new_is_single_focused_pane() {
+        let layout = Layout::new(tid(0));
+        assert_eq!(layout.panes.len(), 1);
+        assert_eq!(layout.focused_pane().unwrap().tab, tid(0));
+        assert!(!layout.is_empty());
+    }
+
+    #[test]
+    fn split_creates_two_panes_and_focuses_new() {
+        let mut layout = Layout::new(tid(0));
+        let new = layout.split_focused(SplitDir::Vertical, tid(1)).unwrap();
+        assert_eq!(layout.panes.len(), 2);
+        assert_eq!(layout.focused, new);
+        assert_eq!(layout.focused_pane().unwrap().tab, tid(1));
+        // The original pane survived as the `a` child.
+        assert!(layout.pane_with_tab(tid(0)).is_some());
+    }
+
+    #[test]
+    fn close_focused_keeps_at_least_one() {
+        let mut layout = Layout::new(tid(0));
+        assert!(layout.close_focused().is_none());
+        assert_eq!(layout.panes.len(), 1);
+    }
+
+    #[test]
+    fn close_focused_collapses_to_survivor() {
+        let mut layout = Layout::new(tid(0));
+        layout.split_focused(SplitDir::Vertical, tid(1));
+        // Focused is the new pane (tid1); closing it leaves the original.
+        assert!(layout.close_focused().is_some());
+        assert_eq!(layout.panes.len(), 1);
+        assert_eq!(layout.panes[0].tab, tid(0));
+    }
+
+    #[test]
+    fn only_keeps_focused_pane() {
+        let mut layout = Layout::new(tid(0));
+        layout.split_focused(SplitDir::Vertical, tid(1));
+        layout.split_focused(SplitDir::Horizontal, tid(2));
+        assert_eq!(layout.panes.len(), 3);
+        let focused_tab = layout.focused_pane().unwrap().tab;
+        layout.only();
+        assert_eq!(layout.panes.len(), 1);
+        assert_eq!(layout.panes[0].tab, focused_tab);
+    }
+
+    #[test]
+    fn focus_cycle_wraps() {
+        let mut layout = Layout::new(tid(0));
+        layout.split_focused(SplitDir::Vertical, tid(1));
+        // panes order: [tid0, tid1], focused = tid1
+        layout.focus_next();
+        assert_eq!(layout.focused_pane().unwrap().tab, tid(0));
+        layout.focus_next(); // wraps to tid1
+        assert_eq!(layout.focused_pane().unwrap().tab, tid(1));
+        layout.focus_prev(); // wraps back to tid0
+        assert_eq!(layout.focused_pane().unwrap().tab, tid(0));
+    }
+
+    #[test]
+    fn swap_focused_tab_evicts_old() {
+        let mut layout = Layout::new(tid(0));
+        let evicted = layout.swap_focused_tab(tid(5)).unwrap();
+        assert_eq!(evicted, tid(0));
+        assert_eq!(layout.focused_pane().unwrap().tab, tid(5));
+    }
+
+    #[test]
+    fn pane_with_tab_only_finds_mounted() {
+        let mut layout = Layout::new(tid(0));
+        layout.split_focused(SplitDir::Vertical, tid(1));
+        assert!(layout.pane_with_tab(tid(0)).is_some());
+        assert!(layout.pane_with_tab(tid(1)).is_some());
+        assert!(layout.pane_with_tab(tid(99)).is_none());
     }
 }

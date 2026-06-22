@@ -6,7 +6,7 @@
 //! by asserting on the returned effects without any GTK or engine present.
 
 use crate::core::msg::{JsPurpose, RequestId};
-use crate::core::state::{Permissions, TabId};
+use crate::core::state::{PaneId, Permissions, TabId};
 use std::path::PathBuf;
 
 /// Severity of a user-facing message.
@@ -47,8 +47,11 @@ pub enum Effect {
     },
     /// Destroy the web view for a closed tab.
     CloseTab { tab: TabId },
-    /// Make the given tab the visible one.
-    FocusTab { tab: TabId },
+    /// Move keyboard focus to a pane and mark it as the focused pane, without
+    /// rebuilding the layout.
+    FocusPane { pane: PaneId },
+    /// Rebuild the pane layout (`GtkPaned` tree) from current state.
+    RenderLayout,
     /// Write text to the system clipboard.
     SetClipboard(String),
     /// Persist the quickmarks (name, url) to disk.

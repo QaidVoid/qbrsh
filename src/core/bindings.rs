@@ -77,9 +77,54 @@ pub fn default_bindings() -> BindingTrie {
     // Content
     bind("td", "darkmode");
 
+    // Panes (vim-style <C-w> prefix)
+    bind("<C-w>s", "split");
+    bind("<C-w>v", "vsplit");
+    bind("<C-w>c", "close-pane");
+    bind("<C-w>o", "only-pane");
+    bind("<C-w>w", "focus-pane");
+    bind("<C-w>W", "focus-pane-prev");
+
     // Mode switching
     bind("i", "mode-enter insert");
     bind("Escape", "mode-leave");
 
     trie
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::trie::TrieMatch;
+
+    #[test]
+    fn pane_prefix_bindings_resolve() {
+        let trie = default_bindings();
+        assert_eq!(
+            trie.lookup(&parse_key_string("<C-w>s")),
+            TrieMatch::Exact("split".to_string())
+        );
+        assert_eq!(
+            trie.lookup(&parse_key_string("<C-w>v")),
+            TrieMatch::Exact("vsplit".to_string())
+        );
+        assert_eq!(
+            trie.lookup(&parse_key_string("<C-w>c")),
+            TrieMatch::Exact("close-pane".to_string())
+        );
+        assert_eq!(
+            trie.lookup(&parse_key_string("<C-w>o")),
+            TrieMatch::Exact("only-pane".to_string())
+        );
+        assert_eq!(
+            trie.lookup(&parse_key_string("<C-w>w")),
+            TrieMatch::Exact("focus-pane".to_string())
+        );
+        assert_eq!(
+            trie.lookup(&parse_key_string("<C-w>W")),
+            TrieMatch::Exact("focus-pane-prev".to_string())
+        );
+        // The prefix alone is partial (no command yet).
+        assert_eq!(trie.lookup(&parse_key_string("<C-w>")), TrieMatch::Partial);
+    }
 }

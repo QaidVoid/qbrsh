@@ -135,6 +135,18 @@ pub enum Command {
     Downloads,
     /// Open the history management view, optionally pre-filtered.
     History(Option<String>),
+    /// Split the focused pane into two stacked panes (top/bottom), opening a new
+    /// tab in the new pane.
+    Split,
+    /// Split the focused pane into two side-by-side panes, opening a new tab in
+    /// the new pane.
+    Vsplit,
+    /// Close the focused pane (its tab becomes a background tab).
+    ClosePane,
+    /// Close every pane except the focused one.
+    OnlyPane,
+    /// Cycle focus to the next (`next`) or previous pane.
+    FocusPane { next: bool },
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -248,6 +260,12 @@ impl Command {
             "permissions" => Command::Permissions,
             "downloads" => Command::Downloads,
             "history" => Command::History(if arg.is_empty() { None } else { Some(arg) }),
+            "split" | "sp" => Command::Split,
+            "vsplit" | "vs" => Command::Vsplit,
+            "close-pane" => Command::ClosePane,
+            "only-pane" => Command::OnlyPane,
+            "focus-pane" => Command::FocusPane { next: true },
+            "focus-pane-prev" => Command::FocusPane { next: false },
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -414,6 +432,12 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("permissions", "Manage per-site permissions"),
     ("downloads", "Manage downloads"),
     ("history", "Browse and search history"),
+    ("split", "Split the focused pane top/bottom"),
+    ("vsplit", "Split the focused pane side by side"),
+    ("close-pane", "Close the focused pane (keep its tab)"),
+    ("only-pane", "Close all panes except the focused one"),
+    ("focus-pane", "Cycle focus to the next pane"),
+    ("focus-pane-prev", "Cycle focus to the previous pane"),
     ("quit", "Quit the browser"),
 ];
 
@@ -469,5 +493,29 @@ mod tests {
             value: "y".to_string(),
         }));
         assert!(!is_remote_safe(&Command::SessionSave("s".to_string())));
+    }
+
+    #[test]
+    fn pane_commands_parse() {
+        assert!(matches!(Command::parse("split").unwrap(), Command::Split));
+        assert!(matches!(Command::parse("sp").unwrap(), Command::Split));
+        assert!(matches!(Command::parse("vsplit").unwrap(), Command::Vsplit));
+        assert!(matches!(Command::parse("vs").unwrap(), Command::Vsplit));
+        assert!(matches!(
+            Command::parse("close-pane").unwrap(),
+            Command::ClosePane
+        ));
+        assert!(matches!(
+            Command::parse("only-pane").unwrap(),
+            Command::OnlyPane
+        ));
+        assert!(matches!(
+            Command::parse("focus-pane").unwrap(),
+            Command::FocusPane { next: true }
+        ));
+        assert!(matches!(
+            Command::parse("focus-pane-prev").unwrap(),
+            Command::FocusPane { next: false }
+        ));
     }
 }

@@ -94,8 +94,8 @@ mod tests {
 
     fn fixture() -> (State, TestRunner) {
         let mut state = State::new(Config::default());
-        state.tabs.open("https://example.com");
-        state.tabs.focus_last();
+        let id = state.tabs.open("https://example.com");
+        state.tabs.focus_id(id);
         (
             state,
             TestRunner {

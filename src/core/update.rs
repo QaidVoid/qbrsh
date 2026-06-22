@@ -12,7 +12,7 @@ use crate::core::key::Key;
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
 use crate::core::state::{
     Bookmark, Download as DownloadRecord, DownloadStatus, Mode, PermissionPolicy, PermissionPrompt,
-    Search, SearchStatus, State,
+    Search, SearchStatus, SplitDir, State, TabId,
 };
 use crate::core::trie::TrieMatch;
 
@@ -1061,12 +1061,15 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
 
         Command::TabClose => match state.tabs.close_active() {
             Some((closed, next)) => {
-                let mut effects = vec![Effect::CloseTab { tab: closed }, Effect::RenderTabs];
+                let mut effects = vec![Effect::CloseTab { tab: closed }];
+                // The active tab is the focused pane's tab; closing it collapses
+                // that pane when other panes remain.
+                if state.layout.panes.len() > 1 {
+                    let _ = state.layout.close_focused();
+                    effects.push(Effect::RenderLayout);
+                }
                 match next {
-                    Some(next_id) => {
-                        effects.push(Effect::FocusTab { tab: next_id });
-                        effects.push(Effect::RenderStatus);
-                    }
+                    Some(next_id) => effects.extend(focus_tab(state, next_id)),
                     None => {
                         state.running = false;
                         effects.push(Effect::Quit);
@@ -1076,28 +1079,16 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
             None => Vec::new(),
         },
-        Command::TabNext(count) => match state.tabs.next(count) {
-            Some(id) => vec![
-                Effect::FocusTab { tab: id },
-                Effect::RenderTabs,
-                Effect::RenderStatus,
-            ],
+        Command::TabNext(count) => match state.tabs.peek_next(count) {
+            Some(id) => focus_tab(state, id),
             None => Vec::new(),
         },
-        Command::TabPrev(count) => match state.tabs.prev(count) {
-            Some(id) => vec![
-                Effect::FocusTab { tab: id },
-                Effect::RenderTabs,
-                Effect::RenderStatus,
-            ],
+        Command::TabPrev(count) => match state.tabs.peek_prev(count) {
+            Some(id) => focus_tab(state, id),
             None => Vec::new(),
         },
-        Command::TabSelect(index) => match state.tabs.focus_index_1based(index) {
-            Some(id) => vec![
-                Effect::FocusTab { tab: id },
-                Effect::RenderTabs,
-                Effect::RenderStatus,
-            ],
+        Command::TabSelect(index) => match state.tabs.id_at_1based(index) {
+            Some(id) => focus_tab(state, id),
             None => vec![Effect::ShowMessage {
                 level: MessageLevel::Error,
                 text: format!("no tab at index {index}"),
@@ -1436,6 +1427,55 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             effects
         }
 
+        Command::Split | Command::Vsplit => {
+            let dir = if matches!(cmd, Command::Split) {
+                SplitDir::Horizontal
+            } else {
+                SplitDir::Vertical
+            };
+            split_focused(state, dir)
+        }
+        Command::ClosePane => {
+            if state.layout.is_empty() {
+                return Vec::new();
+            }
+            let mut effects = Vec::new();
+            if state.layout.close_focused().is_some() {
+                effects.push(Effect::RenderLayout);
+                // `close_focused` set the focused pane to the survivor; sync the
+                // active tab to it.
+                if let Some(tab) = state.layout.focused_pane().map(|p| p.tab) {
+                    effects.extend(focus_tab(state, tab));
+                }
+            }
+            effects
+        }
+        Command::OnlyPane => {
+            if state.layout.is_empty() {
+                return Vec::new();
+            }
+            state.layout.only();
+            vec![
+                Effect::RenderLayout,
+                Effect::RenderTabs,
+                Effect::RenderStatus,
+            ]
+        }
+        Command::FocusPane { next } => {
+            if state.layout.is_empty() {
+                return Vec::new();
+            }
+            let shifted = if next {
+                state.layout.focus_next()
+            } else {
+                state.layout.focus_prev()
+            };
+            match shifted.and_then(|_| state.layout.focused_pane().map(|p| p.tab)) {
+                Some(tab) => focus_tab(state, tab),
+                None => Vec::new(),
+            }
+        }
+
         Command::Quit => {
             let urls = state.tabs.urls();
             let active = state.tabs.active_index();
@@ -1499,6 +1539,57 @@ fn with_active(
 }
 
 /// Open a new tab in state and emit the effect to realize its web view.
+/// The single place tabs and panes meet. Makes `id` the active tab and, when a
+/// layout is present, focuses its pane (if `id` is mounted) or swaps it into
+/// the focused pane (if it is a background tab). Maintains the invariant that
+/// the active tab is the focused pane's tab.
+fn focus_tab(state: &mut State, id: TabId) -> Vec<Effect> {
+    state.tabs.focus_id(id);
+    let mut effects = vec![Effect::RenderTabs, Effect::RenderStatus];
+    if state.layout.is_empty() {
+        return effects;
+    }
+    if let Some(pane) = state.layout.pane_with_tab(id) {
+        // Already mounted: just shift focus, no content change.
+        state.layout.focused = pane;
+        effects.push(Effect::FocusPane { pane });
+    } else {
+        // Background tab: swap it into the focused pane. The pane now shows a
+        // different view, so the layout must rebuild to mount it.
+        let _ = state.layout.swap_focused_tab(id);
+        let pane = state.layout.focused;
+        effects.push(Effect::RenderLayout);
+        effects.push(Effect::FocusPane { pane });
+    }
+    effects
+}
+
+/// Split the focused pane in `dir`, opening a new homepage tab in the new pane
+/// and focusing it.
+fn split_focused(state: &mut State, dir: SplitDir) -> Vec<Effect> {
+    if state.layout.is_empty() || state.tabs.active_id().is_none() {
+        return Vec::new();
+    }
+    let home = state.config.homepage.clone();
+    let new_id = state.tabs.open(&home);
+    if let Some(t) = state.tabs.get_mut(new_id) {
+        t.zoom = state.config.zoom.default;
+    }
+    if state.layout.split_focused(dir, new_id).is_none() {
+        return Vec::new();
+    }
+    let mut effects = vec![
+        Effect::OpenTab {
+            id: new_id,
+            uri: home,
+            background: true,
+        },
+        Effect::RenderLayout,
+    ];
+    effects.extend(focus_tab(state, new_id));
+    effects
+}
+
 fn open_tab(state: &mut State, uri: String, background: bool) -> Vec<Effect> {
     let id = state.tabs.open(&uri);
     let default_zoom = state.config.zoom.default;
@@ -1519,10 +1610,8 @@ fn open_tab(state: &mut State, uri: String, background: bool) -> Vec<Effect> {
     if background {
         effects.push(Effect::RenderTabs);
     } else {
-        state.tabs.focus_last();
-        effects.push(Effect::FocusTab { tab: id });
-        effects.push(Effect::RenderTabs);
-        effects.push(Effect::RenderStatus);
+        // Foreground tabs swap into the focused pane and become active.
+        effects.extend(focus_tab(state, id));
     }
     effects
 }
@@ -1611,7 +1700,7 @@ mod tests {
     use crate::core::command::{Command, HintTarget, OpenTarget, ScrollDir};
     use crate::core::key::Key;
     use crate::core::msg::{JsPurpose, LoadEvent, RequestId};
-    use crate::core::state::{Config, Mode, State};
+    use crate::core::state::{Config, Layout, Mode, State};
 
     fn pending_id(state: &State, want: JsPurpose) -> RequestId {
         *state
@@ -1625,7 +1714,10 @@ mod tests {
     fn state_with_tab() -> State {
         let mut state = State::new(Config::default());
         let id = state.tabs.open("https://example.com");
-        state.tabs.focus_last();
+        state.tabs.focus_id(id);
+        // A single-pane layout mirrors startup so tab commands exercise the
+        // real focus_tab path.
+        state.layout = Layout::new(id);
         assert_eq!(state.tabs.active_id(), Some(id));
         state
     }
@@ -2798,5 +2890,99 @@ mod tests {
             tab,
             uri: "https://history.test".to_string()
         }));
+    }
+
+    // --- Split views ---
+
+    #[test]
+    fn focus_tab_swaps_background_tab_into_focused_pane() {
+        let mut state = state_with_tab();
+        let bg = state.tabs.open("https://b.test"); // background (not mounted)
+        let effects = focus_tab(&mut state, bg);
+        assert_eq!(state.tabs.active_id(), Some(bg));
+        assert_eq!(state.layout.focused_pane().unwrap().tab, bg);
+        // Swapping content requires a layout rebuild.
+        assert!(effects.iter().any(|e| matches!(e, Effect::RenderLayout)));
+    }
+
+    #[test]
+    fn focus_tab_focuses_mounted_tab_without_rebuild() {
+        let mut state = state_with_tab();
+        let first = state.tabs.active_id().unwrap();
+        update(&mut state, Msg::Command(Command::Split));
+        // The first tab is mounted in the original pane; focusing it just shifts
+        // focus and must not rebuild.
+        let effects = focus_tab(&mut state, first);
+        assert_eq!(state.layout.focused_pane().unwrap().tab, first);
+        assert!(!effects.iter().any(|e| matches!(e, Effect::RenderLayout)));
+    }
+
+    #[test]
+    fn split_opens_new_tab_and_focuses_it() {
+        let mut state = state_with_tab();
+        let before = state.tabs.len();
+        let effects = update(&mut state, Msg::Command(Command::Split));
+        assert_eq!(state.tabs.len(), before + 1);
+        assert_eq!(state.layout.panes.len(), 2);
+        assert_eq!(
+            state.layout.focused_pane().unwrap().tab,
+            state.tabs.active_id().unwrap()
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::RenderLayout)));
+    }
+
+    #[test]
+    fn vsplit_then_focus_cycle_round_trips() {
+        let mut state = state_with_tab();
+        let first = state.tabs.active_id().unwrap();
+        update(&mut state, Msg::Command(Command::Vsplit));
+        // After split the new pane is focused; cycling returns to the first.
+        update(&mut state, Msg::Command(Command::FocusPane { next: true }));
+        assert_eq!(state.layout.focused_pane().unwrap().tab, first);
+    }
+
+    #[test]
+    fn tab_close_on_mounted_tab_collapses_pane() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::Vsplit));
+        assert_eq!(state.layout.panes.len(), 2);
+        let closed = state.tabs.active_id().unwrap();
+        update(&mut state, Msg::Command(Command::TabClose));
+        assert_eq!(state.layout.panes.len(), 1);
+        assert!(state.layout.pane_with_tab(closed).is_none());
+    }
+
+    #[test]
+    fn close_pane_keeps_tab_and_drops_pane() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::Vsplit));
+        let kept = state.tabs.active_id().unwrap();
+        update(&mut state, Msg::Command(Command::ClosePane));
+        assert_eq!(state.layout.panes.len(), 1);
+        // The tab stays in the tab list (became background).
+        assert!(state.tabs.get(kept).is_some());
+        assert!(state.layout.pane_with_tab(kept).is_none());
+    }
+
+    #[test]
+    fn tab_next_keeps_active_equals_focused_pane_tab() {
+        let mut state = state_with_tab();
+        state.tabs.open("https://b.test");
+        state.tabs.open("https://c.test");
+        update(&mut state, Msg::Command(Command::TabNext(1)));
+        assert_eq!(
+            state.tabs.active_id(),
+            state.layout.focused_pane().map(|p| p.tab)
+        );
+    }
+
+    #[test]
+    fn only_pane_leaves_single_pane() {
+        let mut state = state_with_tab();
+        update(&mut state, Msg::Command(Command::Vsplit));
+        update(&mut state, Msg::Command(Command::Split));
+        assert_eq!(state.layout.panes.len(), 3);
+        update(&mut state, Msg::Command(Command::OnlyPane));
+        assert_eq!(state.layout.panes.len(), 1);
     }
 }

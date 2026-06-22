@@ -50,6 +50,8 @@ cargo run
 | `td` | toggle dark mode | `co` | close other tabs |
 | `/` | find in page | `n` / `N` | next / prev match |
 | `zi` / `zo` | zoom in / out | `zz` | reset zoom |
+| `<C-w>s`/`v` | split stacked / side by side | `<C-w>c` / `o` | close / only pane |
+| `<C-w>w` / `W` | next / prev pane | | |
 
 Counts work (e.g. `5j`). Type `/text` on the command line to search the page,
 then `n` to step forward through matches (wrapping at the end). `N` steps
@@ -69,7 +71,18 @@ selected).
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:session-save/load`, `:plugin-reload`,
-`:permissions`, `:downloads`, `:history`, `:quit`.
+`:permissions`, `:downloads`, `:history`, `:split`, `:vsplit`, `:close-pane`,
+`:only-pane`, `:focus-pane`, `:focus-pane-prev`, `:quit`.
+
+Panes show multiple tabs at once. `<C-w>s` (or `:split`) divides the focused
+pane top/bottom; `<C-w>v` (or `:vsplit`) divides it side by side. Each split
+opens a new tab in the new pane and focuses it. The focused pane holds the
+active tab, so navigation and commands always target the focused pane. Selecting
+a background tab (`J`/`K`, `<A-n>`, `:tab-focus`) swaps it into the focused pane;
+selecting an already-visible tab focuses its pane. `<C-w>w`/`W` cycle focus,
+`<C-w>c` closes the focused pane (its tab becomes a background tab), and
+`<C-w>o` closes every pane except the focused one. Pane layout is not restored
+across restarts (only tabs are).
 
 Downloads are saved to your downloads directory (XDG `Downloads`, or
 `~/.local/share/qbrsh/downloads` as a fallback) with a safe, non-colliding

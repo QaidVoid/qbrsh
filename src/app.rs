@@ -16,7 +16,7 @@ use crate::core::command::Command;
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
-use crate::core::state::{Bookmark, Mode, State, TabId};
+use crate::core::state::{Bookmark, Layout, LayoutNode, Mode, SplitDir, State, TabId};
 use crate::engine::traits::EngineView;
 use crate::engine::webkit::{PermissionMirror, WebKitEngine};
 use crate::history::History;
@@ -31,6 +31,10 @@ struct GtkEffectRunner {
     ui: Ui,
     engine: WebKitEngine,
     views: HashMap<TabId, Box<dyn EngineView>>,
+    /// A persistent wrapper widget per tab, holding its view. The layout
+    /// reparents these wrappers into a `GtkPaned` tree; the view inside is never
+    /// destroyed across rebuilds.
+    pane_wrappers: HashMap<TabId, gtk4::Box>,
     history: History,
     plugins: PluginRuntime,
     permissions: PermissionMirror,
@@ -137,11 +141,15 @@ impl GtkEffectRunner {
                 background-color: {bg}; color: {fg}; \
                 font-family: {ff}; font-size: {fs}px; }}\n\
              #qbrsh-tabbar, #qbrsh-status {{ padding: 2px 6px; }}\n\
-             #qbrsh-completion label {{ padding: 1px 6px; }}",
+             #qbrsh-completion label {{ padding: 1px 6px; }}\n\
+             #qbrsh-layout {{ background-color: {bg}; }}\n\
+             .pane {{ padding: 0; }}\n\
+             .pane-focused {{ outline: 2px solid {accent}; outline-offset: -2px; }}",
             bg = c.colors.background,
             fg = c.colors.foreground,
             ff = c.font.family,
             fs = c.font.size,
+            accent = c.colors.accent,
         );
         self.css.load_from_data(&css);
     }
@@ -317,6 +325,73 @@ impl GtkEffectRunner {
         }
     }
 
+    /// Rebuild the pane layout (`GtkPaned` tree) from `state.layout`. The view
+    /// widgets are kept alive in `pane_wrappers`; this reparents them.
+    fn render_layout(&self, state: &State) {
+        while let Some(child) = self.ui.layout_area.first_child() {
+            self.ui.layout_area.remove(&child);
+        }
+        if state.layout.is_empty() {
+            return;
+        }
+        if let Some(widget) = self.build_node(&state.layout.root, state) {
+            self.ui.layout_area.append(&widget);
+        }
+        self.apply_focus(state);
+    }
+
+    /// Recursively build the widget tree for a layout node.
+    fn build_node(&self, node: &LayoutNode, state: &State) -> Option<gtk4::Widget> {
+        match node {
+            LayoutNode::Leaf(pane_id) => {
+                let pane = state.layout.panes.iter().find(|p| &p.id == pane_id)?;
+                let wrapper = self.pane_wrappers.get(&pane.tab)?.clone();
+                // Detach from a previous parent so the new tree can own it.
+                let _ = wrapper.parent();
+                wrapper.unparent();
+                Some(wrapper.upcast())
+            }
+            LayoutNode::Split { dir, a, b, .. } => {
+                // `:split` (Horizontal) stacks panes; `:vsplit` (Vertical) is
+                // side by side. Map to GtkPaned orientation in one place.
+                let orientation = match dir {
+                    SplitDir::Horizontal => gtk4::Orientation::Vertical,
+                    SplitDir::Vertical => gtk4::Orientation::Horizontal,
+                };
+                let paned = gtk4::Paned::new(orientation);
+                paned.set_vexpand(true);
+                paned.set_hexpand(true);
+                paned.set_wide_handle(true);
+                if let Some(start) = self.build_node(a, state) {
+                    paned.set_start_child(Some(&start));
+                }
+                if let Some(end) = self.build_node(b, state) {
+                    paned.set_end_child(Some(&end));
+                }
+                // All splits are created at 0.5; GtkPaned defaults to the
+                // midpoint, so no explicit position is set (drag drags the
+                // handle natively; the stored ratio is reserved for future use).
+                Some(paned.upcast())
+            }
+        }
+    }
+
+    /// Apply the `pane-focused` class to the focused pane and grab focus, without
+    /// rebuilding the tree. Runs on focus changes and after `render_layout`.
+    fn apply_focus(&self, state: &State) {
+        let focused_tab = state.layout.focused_pane().map(|p| p.tab);
+        for (tab, wrapper) in &self.pane_wrappers {
+            if Some(*tab) == focused_tab {
+                wrapper.add_css_class("pane-focused");
+                if let Some(v) = self.views.get(tab) {
+                    v.widget().grab_focus();
+                }
+            } else {
+                wrapper.remove_css_class("pane-focused");
+            }
+        }
+    }
+
     fn render_tabs(&self, state: &State) {
         let n = state.tabs.len();
         let idx = state.tabs.active_index() + 1;
@@ -331,7 +406,14 @@ impl GtkEffectRunner {
                 }
             })
             .unwrap_or_default();
-        self.ui.tabbar.set_text(&format!("[{idx}/{n}] {title}"));
+        let panes = if state.layout.panes.len() > 1 {
+            format!(" [{} panes]", state.layout.panes.len())
+        } else {
+            String::new()
+        };
+        self.ui
+            .tabbar
+            .set_text(&format!("[{idx}/{n}] {title}{panes}"));
         let win_title = if title.is_empty() { "qbrsh" } else { &title };
         self.ui
             .window
@@ -408,29 +490,32 @@ impl EffectRunner for GtkEffectRunner {
             Effect::OpenTab {
                 id,
                 uri,
-                background,
+                background: _,
             } => {
                 let view = self.engine.create_view(id, &uri, self.mailbox.clone());
                 if let Some(t) = state.tabs.get(id) {
                     view.set_zoom(t.zoom);
                 }
-                self.ui.stack.add_child(&view.widget());
-                if !background {
-                    self.ui.stack.set_visible_child(&view.widget());
-                }
                 view.load_uri(&uri);
+                // Wrap the view in a persistent box the layout reparents. It is
+                // NOT parented here; `render_layout` mounts the mounted panes.
+                let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                wrapper.set_widget_name("qbrsh-pane");
+                wrapper.add_css_class("pane");
+                wrapper.set_vexpand(true);
+                wrapper.set_hexpand(true);
+                wrapper.append(&view.widget());
+                self.pane_wrappers.insert(id, wrapper);
                 self.views.insert(id, view);
             }
             Effect::CloseTab { tab } => {
-                if let Some(v) = self.views.remove(&tab) {
-                    self.ui.stack.remove(&v.widget());
+                if let Some(wrapper) = self.pane_wrappers.remove(&tab) {
+                    wrapper.unparent();
                 }
+                self.views.remove(&tab);
             }
-            Effect::FocusTab { tab } => {
-                if let Some(v) = self.views.get(&tab) {
-                    self.ui.stack.set_visible_child(&v.widget());
-                }
-            }
+            Effect::FocusPane { pane: _ } => self.apply_focus(state),
+            Effect::RenderLayout => self.render_layout(state),
             Effect::SetClipboard(text) => {
                 self.ui.window.clipboard().set_text(&text);
             }
@@ -703,26 +788,36 @@ pub fn run(app: &Application, initial_url: Option<String>) {
 
     let default_zoom = state.config.zoom.default;
     let mut views: HashMap<TabId, Box<dyn EngineView>> = HashMap::new();
+    let mut pane_wrappers: HashMap<TabId, gtk4::Box> = HashMap::new();
+    let mut active_tab_id = TabId(0);
     for (i, raw) in initial_urls.iter().enumerate() {
         // Normalize (so a bare host gains a scheme) and load directly into the
         // new view; this mirrors the runtime Open path without depending on
         // which tab is active when the message is later dispatched.
         let uri = crate::core::update::normalize_target(raw);
         let id = state.tabs.open(&uri);
+        if i == active_index {
+            active_tab_id = id;
+        }
         if let Some(t) = state.tabs.get_mut(id) {
             t.zoom = default_zoom;
         }
         let view = engine.create_view(id, &uri, mailbox.clone());
         view.set_zoom(default_zoom);
-        ui.stack.add_child(&view.widget());
-        if i == active_index {
-            ui.stack.set_visible_child(&view.widget());
-        }
         view.load_uri(&uri);
+        // Wrap each view in a persistent box the layout reparents.
+        let wrapper = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        wrapper.set_widget_name("qbrsh-pane");
+        wrapper.add_css_class("pane");
+        wrapper.set_vexpand(true);
+        wrapper.set_hexpand(true);
+        wrapper.append(&view.widget());
+        pane_wrappers.insert(id, wrapper);
         views.insert(id, view);
     }
-    // Focus the saved active tab (1-based index).
-    state.tabs.focus_index_1based(active_index + 1);
+    // Focus the saved active tab and initialize a single-pane layout for it.
+    state.tabs.focus_id(active_tab_id);
+    state.layout = Layout::new(active_tab_id);
 
     let history = History::open(&dir.join("history.db"), mailbox.clone());
     let plugins = PluginRuntime::new(dir.join("plugins"), mailbox.clone());
@@ -741,6 +836,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         ui: ui.clone(),
         engine,
         views,
+        pane_wrappers,
         history,
         plugins,
         permissions,
@@ -753,6 +849,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         mailbox: mailbox.clone(),
     };
     runner.apply_theme(&state);
+    runner.render_layout(&state);
     runner.render_status(&state);
     runner.render_tabs(&state);
     eprintln!("[qbrsh] startup {}", memory_report(runner.views.len()));

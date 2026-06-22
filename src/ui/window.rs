@@ -1,13 +1,13 @@
 //! The main window: a view stack with a tab bar, status bar, and command line.
 
 use gtk4::prelude::*;
-use gtk4::{Application, ApplicationWindow, Box as GtkBox, Entry, Label, Orientation, Stack};
+use gtk4::{Application, ApplicationWindow, Box as GtkBox, Entry, Label, Orientation};
 
 /// Handles to the window's widgets. Cloning is cheap (GObject reference counts).
 #[derive(Clone)]
 pub struct Ui {
     pub window: ApplicationWindow,
-    pub stack: Stack,
+    pub layout_area: GtkBox,
     pub tabbar: Label,
     pub statusbar: Label,
     pub completion: GtkBox,
@@ -30,9 +30,12 @@ impl Ui {
         tabbar.set_xalign(0.0);
         tabbar.set_widget_name("qbrsh-tabbar");
 
-        let stack = Stack::new();
-        stack.set_vexpand(true);
-        stack.set_hexpand(true);
+        // The layout area holds a single child: the focused pane's wrapper, or a
+        // GtkPaned tree when split. It is repopulated by `render_layout`.
+        let layout_area = GtkBox::new(Orientation::Vertical, 0);
+        layout_area.set_vexpand(true);
+        layout_area.set_hexpand(true);
+        layout_area.set_widget_name("qbrsh-layout");
 
         let statusbar = Label::new(None);
         statusbar.set_xalign(0.0);
@@ -47,7 +50,7 @@ impl Ui {
         commandline.set_widget_name("qbrsh-cmd");
 
         vbox.append(&tabbar);
-        vbox.append(&stack);
+        vbox.append(&layout_area);
         vbox.append(&completion);
         vbox.append(&statusbar);
         vbox.append(&commandline);
@@ -55,7 +58,7 @@ impl Ui {
 
         Ui {
             window,
-            stack,
+            layout_area,
             tabbar,
             statusbar,
             completion,
