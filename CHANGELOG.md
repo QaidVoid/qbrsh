@@ -1,4 +1,20 @@
 
+## 0.3.0 — 2026-06-22
+
+### Bug Fixes
+
+- **engine:** Block data:/javascript: from window.open
+
+### Features
+
+- Website-data clearing and persistent cookies
+- Private/incognito tabs on an ephemeral session
+- Vertical tab sidebar with favicons and collapse
+- Configurable search, keybindings, and site prefs
+- **panes:** Split views and vim-style pane commands
+- Restore tabs on restart and add :history
+- **downloads:** Track lifecycle and add :downloads view
+
 ## 0.2.0 — 2026-06-18
 
 ### Bug Fixes
