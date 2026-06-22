@@ -61,7 +61,17 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | `set <key> <value>` | change a setting at runtime |
 | `config-source` | reload the config file |
 | `darkmode` | toggle web-content dark mode |
+| `js-enable` / `js-disable` / `js-toggle` | change JavaScript for the current site |
+| `bind <keys> <command>` | bind a key sequence to a command |
+| `unbind <keys>` | remove a key binding |
+| `bindings` | list the active key bindings |
 | `mode-enter <mode>` / `mode-leave` | switch input mode |
+
+`open`/`tabopen` accept a search term or a URL. A bare term goes to the default
+search engine; a leading engine keyword followed by a query selects that engine
+(for example `tabopen gh ripgrep`). With no argument, `tabopen` opens the
+configured new-tab page. See [Configuration](/guide/configuration) for search
+engines, bindings, the new-tab page, the user-agent, and per-domain JavaScript.
 
 ## Plugins and lifecycle
 

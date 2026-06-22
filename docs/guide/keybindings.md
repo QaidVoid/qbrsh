@@ -56,6 +56,11 @@ followed. `Escape` cancels.
 | `m` / `b` | save / load a quickmark |
 | `gb` | load a bookmark |
 | `td` | toggle dark mode |
+| `tj` | toggle JavaScript for the current site |
+
+Bindings are remappable. Set them in the `[bindings]` section of the config (see
+[Configuration](/guide/configuration)) or at runtime with `:bind`, `:unbind`,
+and `:bindings`.
 
 ## Modes and command line
 

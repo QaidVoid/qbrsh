@@ -31,6 +31,14 @@ pub enum YankWhat {
     Title,
 }
 
+/// How a JavaScript site-preference command changes the current site's rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsToggle {
+    Enable,
+    Disable,
+    Toggle,
+}
+
 /// What following a hint does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HintTarget {
@@ -147,6 +155,14 @@ pub enum Command {
     OnlyPane,
     /// Cycle focus to the next (`next`) or previous pane.
     FocusPane { next: bool },
+    /// Change the current site's JavaScript preference.
+    SiteJavascript(JsToggle),
+    /// Bind a key sequence to a command for the running session.
+    Bind { keys: String, command: String },
+    /// Remove the binding for a key sequence.
+    Unbind(String),
+    /// List the active key bindings.
+    Bindings,
     /// Quit the browser.
     Quit,
     /// Do nothing (used to disable a default binding).
@@ -266,6 +282,27 @@ impl Command {
             "only-pane" => Command::OnlyPane,
             "focus-pane" => Command::FocusPane { next: true },
             "focus-pane-prev" => Command::FocusPane { next: false },
+            "js-enable" => Command::SiteJavascript(JsToggle::Enable),
+            "js-disable" => Command::SiteJavascript(JsToggle::Disable),
+            "js-toggle" => Command::SiteJavascript(JsToggle::Toggle),
+            "bind" => {
+                let keys = rest
+                    .first()
+                    .ok_or_else(|| "bind needs a key sequence".to_string())?
+                    .to_string();
+                let command = rest[1..].join(" ");
+                if command.is_empty() {
+                    return Err("bind needs a command".to_string());
+                }
+                Command::Bind { keys, command }
+            }
+            "unbind" => {
+                if arg.is_empty() {
+                    return Err("unbind needs a key sequence".to_string());
+                }
+                Command::Unbind(arg)
+            }
+            "bindings" => Command::Bindings,
             "quit" | "q" | "qa" => Command::Quit,
             "nop" => Command::Nop,
             other => return Err(format!("unknown command: {other}")),
@@ -438,6 +475,12 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("only-pane", "Close all panes except the focused one"),
     ("focus-pane", "Cycle focus to the next pane"),
     ("focus-pane-prev", "Cycle focus to the previous pane"),
+    ("js-enable", "Enable JavaScript for the current site"),
+    ("js-disable", "Disable JavaScript for the current site"),
+    ("js-toggle", "Toggle JavaScript for the current site"),
+    ("bind", "Bind a key sequence to a command"),
+    ("unbind", "Remove a key binding"),
+    ("bindings", "List the active key bindings"),
     ("quit", "Quit the browser"),
 ];
 

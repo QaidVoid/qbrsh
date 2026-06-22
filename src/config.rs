@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::core::state::{Config, Permissions};
+use crate::core::state::{Config, Permissions, SitePreferences};
 
 /// Path to the user config file.
 pub fn config_path() -> Option<PathBuf> {
@@ -27,6 +27,23 @@ pub fn save_permissions(path: &Path, permissions: &Permissions) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(text) = toml::to_string_pretty(permissions) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// Load the per-domain site-preference store (data-dir state, separate from the
+/// user-authored `config.toml`), if present.
+pub fn load_site_prefs(path: &Path) -> Option<SitePreferences> {
+    let text = std::fs::read_to_string(path).ok()?;
+    toml::from_str(&text).ok()
+}
+
+/// Persist the per-domain site-preference store to `path`.
+pub fn save_site_prefs(path: &Path, prefs: &SitePreferences) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = toml::to_string_pretty(prefs) {
         let _ = std::fs::write(path, text);
     }
 }

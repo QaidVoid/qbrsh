@@ -5,14 +5,15 @@
 //! inline. Results of asynchronous effects re-enter through [`update`] as new
 //! messages (see [`Msg::JsResult`]).
 
-use crate::core::command::{Command, HintTarget, OpenTarget, ScrollDir, YankWhat};
+use crate::core::bindings::build_bindings;
+use crate::core::command::{Command, HintTarget, JsToggle, OpenTarget, ScrollDir, YankWhat};
 use crate::core::completion::{CompletionItem, complete};
 use crate::core::effect::{Effect, MessageLevel};
-use crate::core::key::Key;
+use crate::core::key::{Key, display_sequence, parse_key_string};
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
 use crate::core::state::{
     Bookmark, Download as DownloadRecord, DownloadStatus, Mode, PermissionPolicy, PermissionPrompt,
-    Search, SearchStatus, SplitDir, State, TabId,
+    Search, SearchEngines, SearchStatus, SplitDir, State, TabId,
 };
 use crate::core::trie::TrieMatch;
 
@@ -260,7 +261,8 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
         }
 
         Msg::ConfigLoaded(config) => {
-            state.config = config;
+            state.config = *config;
+            rebuild_bindings(state);
             vec![
                 Effect::ApplyTheme,
                 Effect::SyncPermissions(state.config.permissions.clone()),
@@ -778,7 +780,7 @@ fn open_history_current(state: &mut State) -> Vec<Effect> {
     if let Some(tab) = state.tabs.active_id() {
         effects.push(Effect::LoadUri {
             tab,
-            uri: normalize_target(&row.url),
+            uri: normalize_target(&row.url, &state.config.search),
         });
     }
     effects
@@ -796,7 +798,8 @@ fn open_history_tab(state: &mut State) -> Vec<Effect> {
     };
     state.mode.leave();
     let mut effects = vec![Effect::RenderHistory, Effect::RenderStatus];
-    effects.extend(open_tab(state, normalize_target(&row.url), false));
+    let uri = normalize_target(&row.url, &state.config.search);
+    effects.extend(open_tab(state, uri, false));
     effects
 }
 
@@ -999,7 +1002,13 @@ fn substitute_vars(state: &State, text: &str) -> String {
 fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
     match cmd {
         Command::Open { target, input } => {
-            let uri = normalize_target(&input);
+            // An empty target opens the configured new-tab page.
+            let raw = if input.trim().is_empty() {
+                state.config.newtab.clone()
+            } else {
+                input
+            };
+            let uri = normalize_target(&raw, &state.config.search);
             match target {
                 OpenTarget::Current => match state.tabs.active_id() {
                     Some(tab) => vec![Effect::LoadUri { tab, uri }],
@@ -1319,26 +1328,52 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
         }
 
-        Command::Set { key, value } => match state.config.set(&key, &value) {
-            Ok(()) => {
-                let apply = if key.starts_with("permissions.") {
-                    Effect::SyncPermissions(state.config.permissions.clone())
-                } else {
-                    Effect::ApplyTheme
+        Command::Set { key, value } => {
+            // Per-domain JavaScript rules live in the data-dir site-preference
+            // store, not the user config, so they are handled before delegating.
+            if let Some(rest) = key.strip_prefix("javascript.") {
+                return match parse_bool(&value) {
+                    Ok(enabled) => {
+                        if rest == "default" {
+                            state.site_prefs.javascript_default = enabled;
+                        } else {
+                            state.site_prefs.set_javascript(rest, enabled);
+                        }
+                        vec![
+                            Effect::SyncSitePrefs(state.site_prefs.clone()),
+                            Effect::SaveSitePrefs(state.site_prefs.clone()),
+                            Effect::ShowMessage {
+                                level: MessageLevel::Info,
+                                text: format!("{key} = {value}"),
+                            },
+                        ]
+                    }
+                    Err(text) => vec![Effect::ShowMessage {
+                        level: MessageLevel::Error,
+                        text,
+                    }],
                 };
-                vec![
-                    apply,
-                    Effect::ShowMessage {
+            }
+            match state.config.set(&key, &value) {
+                Ok(()) => {
+                    let mut effects = Vec::new();
+                    if key.starts_with("permissions.") {
+                        effects.push(Effect::SyncPermissions(state.config.permissions.clone()));
+                    } else if !key.starts_with("search.") {
+                        effects.push(Effect::ApplyTheme);
+                    }
+                    effects.push(Effect::ShowMessage {
                         level: MessageLevel::Info,
                         text: format!("{key} = {value}"),
-                    },
-                ]
+                    });
+                    effects
+                }
+                Err(text) => vec![Effect::ShowMessage {
+                    level: MessageLevel::Error,
+                    text,
+                }],
             }
-            Err(text) => vec![Effect::ShowMessage {
-                level: MessageLevel::Error,
-                text,
-            }],
-        },
+        }
         Command::ConfigSource => vec![Effect::ReloadConfig],
         Command::PluginReload => vec![Effect::ReloadPlugins],
         Command::DarkMode => {
@@ -1476,6 +1511,52 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
         }
 
+        Command::SiteJavascript(toggle) => site_javascript(state, toggle),
+        Command::Bind { keys, command } => {
+            let parsed = parse_key_string(&keys);
+            if parsed.is_empty() {
+                return vec![Effect::ShowMessage {
+                    level: MessageLevel::Error,
+                    text: format!("invalid key sequence: {keys}"),
+                }];
+            }
+            match state.bindings.insert_checked(&parsed, command.clone()) {
+                Ok(()) => vec![Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: format!("bound {keys} -> {command}"),
+                }],
+                Err(e) => vec![Effect::ShowMessage {
+                    level: MessageLevel::Error,
+                    text: format!("bind '{keys}' {e}"),
+                }],
+            }
+        }
+        Command::Unbind(keys) => {
+            let parsed = parse_key_string(&keys);
+            let removed = !parsed.is_empty() && state.bindings.remove(&parsed);
+            vec![Effect::ShowMessage {
+                level: MessageLevel::Info,
+                text: if removed {
+                    format!("unbound {keys}")
+                } else {
+                    format!("no binding for {keys}")
+                },
+            }]
+        }
+        Command::Bindings => {
+            let mut listed: Vec<String> = state
+                .bindings
+                .bindings()
+                .into_iter()
+                .map(|(keys, cmd)| format!("{} -> {cmd}", display_sequence(&keys)))
+                .collect();
+            listed.sort();
+            vec![Effect::ShowMessage {
+                level: MessageLevel::Info,
+                text: listed.join("  |  "),
+            }]
+        }
+
         Command::Quit => {
             let urls = state.tabs.urls();
             let active = state.tabs.active_index();
@@ -1483,6 +1564,72 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             vec![Effect::SaveAutosave { urls, active }, Effect::Quit]
         }
         Command::Nop => Vec::new(),
+    }
+}
+
+/// Apply a JavaScript site-preference change to the active tab's site: update the
+/// stored rule, push and persist the store, then re-apply to every open tab on
+/// that site and reload them so the change takes effect.
+fn site_javascript(state: &mut State, toggle: JsToggle) -> Vec<Effect> {
+    let Some(url) = state.tabs.active().map(|t| t.url.clone()) else {
+        return Vec::new();
+    };
+    let Some(host) = crate::adblock::site_of(&url) else {
+        return vec![Effect::ShowMessage {
+            level: MessageLevel::Error,
+            text: "no site for the active tab".to_string(),
+        }];
+    };
+    let enabled = match toggle {
+        JsToggle::Enable => true,
+        JsToggle::Disable => false,
+        JsToggle::Toggle => !state.site_prefs.javascript_for(&host),
+    };
+    state.site_prefs.set_javascript(&host, enabled);
+
+    let mut effects = vec![
+        Effect::SyncSitePrefs(state.site_prefs.clone()),
+        Effect::SaveSitePrefs(state.site_prefs.clone()),
+    ];
+    let tabs: Vec<TabId> = state
+        .tabs
+        .iter()
+        .filter(|t| crate::adblock::site_of(&t.url).as_deref() == Some(host.as_str()))
+        .map(|t| t.id)
+        .collect();
+    for tab in tabs {
+        effects.push(Effect::SetJavascript { tab, enabled });
+        effects.push(Effect::Reload {
+            tab,
+            bypass_cache: false,
+        });
+    }
+    effects.push(Effect::ShowMessage {
+        level: MessageLevel::Info,
+        text: format!(
+            "javascript {} for {host}",
+            if enabled { "enabled" } else { "disabled" }
+        ),
+    });
+    effects
+}
+
+/// Rebuild the binding trie from the current config overrides, reporting any
+/// invalid entries.
+fn rebuild_bindings(state: &mut State) {
+    let (bindings, errors) = build_bindings(&state.config.bindings);
+    state.bindings = bindings;
+    for e in &errors {
+        eprintln!("[qbrsh] config: {e}");
+    }
+}
+
+/// Parse a boolean config value.
+fn parse_bool(value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(format!("expected true or false, got: {other}")),
     }
 }
 
@@ -1666,10 +1813,11 @@ fn scroll_script(dir: ScrollDir, count: u32) -> String {
 
 /// Normalize command-line input into a navigable URI.
 ///
-/// A minimal heuristic for the skeleton: explicit schemes pass through, a single
-/// dotted token becomes `https://`, anything else is a DuckDuckGo search. The
-/// full search-engine and URL handling lands with the URL subsystem.
-pub(crate) fn normalize_target(input: &str) -> String {
+/// Explicit schemes and `about:` targets pass through; a single whitespace-free
+/// dotted token becomes `https://`. Otherwise the input is a search: a leading
+/// token that names a configured engine and is followed by a query selects that
+/// engine, and anything else goes to the default engine.
+pub(crate) fn normalize_target(input: &str, search: &SearchEngines) -> String {
     let t = input.trim();
     if t.is_empty() {
         return "about:blank".to_string();
@@ -1680,7 +1828,31 @@ pub(crate) fn normalize_target(input: &str) -> String {
     if !t.contains(char::is_whitespace) && t.contains('.') {
         return format!("https://{t}");
     }
-    format!("https://duckduckgo.com/?q={}", t.replace(' ', "+"))
+    if let Some((first, rest)) = t.split_once(char::is_whitespace) {
+        let rest = rest.trim();
+        if !rest.is_empty()
+            && let Some(template) = search.engines.get(first)
+        {
+            return template.replace("{}", &encode_query(rest));
+        }
+    }
+    search.default_template().replace("{}", &encode_query(t))
+}
+
+/// Percent-encode a search query for use in a URL, mapping spaces to `+` and
+/// leaving the URL-unreserved characters intact.
+fn encode_query(query: &str) -> String {
+    let mut out = String::new();
+    for b in query.bytes() {
+        match b {
+            b' ' => out.push('+'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Parse a bare command string and either run it or report the error.
@@ -1724,6 +1896,172 @@ mod tests {
 
     fn press(state: &mut State, sym: &str) -> Vec<Effect> {
         update(state, Msg::Key(Key::plain(sym)))
+    }
+
+    fn search_with(default: &str, engines: &[(&str, &str)]) -> SearchEngines {
+        let mut s = SearchEngines::default();
+        s.default = default.to_string();
+        s.engines = engines
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        s
+    }
+
+    #[test]
+    fn normalize_passes_through_urls() {
+        let s = SearchEngines::default();
+        assert_eq!(normalize_target("https://x.test", &s), "https://x.test");
+        assert_eq!(normalize_target("example.com", &s), "https://example.com");
+        assert_eq!(normalize_target("about:blank", &s), "about:blank");
+        assert_eq!(normalize_target("", &s), "about:blank");
+    }
+
+    #[test]
+    fn normalize_uses_default_engine_for_bare_query() {
+        let s = search_with("ddg", &[("ddg", "https://ddg.test/?q={}")]);
+        assert_eq!(
+            normalize_target("hello world", &s),
+            "https://ddg.test/?q=hello+world"
+        );
+    }
+
+    #[test]
+    fn normalize_selects_engine_by_leading_keyword() {
+        let s = search_with(
+            "ddg",
+            &[
+                ("ddg", "https://ddg.test/?q={}"),
+                ("gh", "https://github.com/search?q={}"),
+            ],
+        );
+        assert_eq!(
+            normalize_target("gh rust serde", &s),
+            "https://github.com/search?q=rust+serde"
+        );
+        // A lone keyword with no query is itself a default-engine search.
+        assert_eq!(normalize_target("gh", &s), "https://ddg.test/?q=gh");
+        // A leading token that is not an engine is part of the query.
+        assert_eq!(
+            normalize_target("nope here", &s),
+            "https://ddg.test/?q=nope+here"
+        );
+    }
+
+    #[test]
+    fn normalize_falls_back_when_default_missing() {
+        let s = search_with("gone", &[("gh", "https://github.com/search?q={}")]);
+        assert_eq!(normalize_target("a b", &s), "https://duckduckgo.com/?q=a+b");
+    }
+
+    #[test]
+    fn normalize_encodes_unsafe_query_characters() {
+        let s = search_with("ddg", &[("ddg", "https://ddg.test/?q={}")]);
+        assert_eq!(normalize_target("a&b c", &s), "https://ddg.test/?q=a%26b+c");
+    }
+
+    #[test]
+    fn open_empty_input_uses_newtab_page() {
+        let mut state = state_with_tab();
+        state.config.newtab = "https://start.test".to_string();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::Tab,
+                input: String::new(),
+            }),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenTab { uri, .. } if uri == "https://start.test"
+        )));
+    }
+
+    #[test]
+    fn open_empty_input_defaults_to_about_blank() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::Open {
+                target: OpenTarget::Tab,
+                input: String::new(),
+            }),
+        );
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenTab { uri, .. } if uri == "about:blank"
+        )));
+    }
+
+    #[test]
+    fn js_toggle_records_rule_and_reloads_site_tabs() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::SiteJavascript(JsToggle::Toggle)),
+        );
+        // The active tab is on example.com; toggling from the default (enabled)
+        // disables it and records the rule.
+        assert!(!state.site_prefs.javascript_for("example.com"));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetJavascript { enabled: false, .. }))
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SaveSitePrefs(_)))
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::Reload { .. })));
+    }
+
+    #[test]
+    fn set_javascript_rule_updates_store_and_persists() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::Set {
+                key: "javascript.example.com".to_string(),
+                value: "false".to_string(),
+            }),
+        );
+        assert!(!state.site_prefs.javascript_for("example.com"));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SaveSitePrefs(_)))
+        );
+        // The global default is settable too.
+        update(
+            &mut state,
+            Msg::Command(Command::Set {
+                key: "javascript.default".to_string(),
+                value: "false".to_string(),
+            }),
+        );
+        assert!(!state.site_prefs.javascript_default);
+    }
+
+    #[test]
+    fn bind_and_unbind_update_live_bindings() {
+        let mut state = state_with_tab();
+        update(
+            &mut state,
+            Msg::Command(Command::Bind {
+                keys: "gh".to_string(),
+                command: "scroll-to-perc 0".to_string(),
+            }),
+        );
+        assert_eq!(
+            state.bindings.lookup(&parse_key_string("gh")),
+            TrieMatch::Exact("scroll-to-perc 0".to_string())
+        );
+        update(&mut state, Msg::Command(Command::Unbind("gg".to_string())));
+        assert_eq!(
+            state.bindings.lookup(&parse_key_string("gg")),
+            TrieMatch::None
+        );
     }
 
     fn request_permission(state: &mut State, id: u64, host: &str) -> Vec<Effect> {

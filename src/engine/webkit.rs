@@ -24,7 +24,7 @@ use crate::adblock;
 use crate::core::command::{Command, OpenTarget, is_unsafe_open_target};
 use crate::core::msg::{LoadEvent, Msg};
 use crate::core::runtime::Mailbox;
-use crate::core::state::{Capability, PermissionPolicy, Permissions, TabId};
+use crate::core::state::{Capability, PermissionPolicy, Permissions, SitePreferences, TabId};
 
 /// Deferred permission requests awaiting the user's decision, keyed by id.
 type PendingPermissions = Rc<RefCell<HashMap<u64, PermissionRequest>>>;
@@ -33,6 +33,10 @@ use super::traits::EngineView;
 
 /// Shared, runtime-updatable permission policy read by the permission handler.
 pub type PermissionMirror = Rc<RefCell<Permissions>>;
+
+/// Shared, runtime-updatable per-domain site preferences read at view creation
+/// and on each top-level navigation.
+pub type SitePrefsMirror = Rc<RefCell<SitePreferences>>;
 
 /// Live download handles held by the engine for cancel, keyed by id.
 type DownloadMap = Rc<RefCell<HashMap<u64, Download>>>;
@@ -49,9 +53,15 @@ const MAX_FIND_MATCHES: u32 = 1000;
 /// site key for same-site web-process grouping.
 type ViewRegistry = Rc<RefCell<Vec<(Option<String>, glib::object::WeakRef<WebView>)>>>;
 
-/// Factory that builds web views sharing one settings object and network session.
+/// Factory that builds web views, each with its own settings object (so
+/// JavaScript can differ per site) over a shared network session.
 pub struct WebKitEngine {
-    settings: Settings,
+    /// Whether developer extras and console output are enabled on each view.
+    debug: bool,
+    /// User-agent override applied to every view; empty leaves the engine default.
+    user_agent: String,
+    /// Per-domain site preferences read when building a view and on navigation.
+    site_prefs: SitePrefsMirror,
     /// Web context shared by all views; carries the cache model and web-process
     /// memory-pressure settings. Views relate to a live sibling and inherit it.
     context: WebContext,
@@ -83,10 +93,13 @@ impl WebKitEngine {
     /// permission policy mirror. Compiles a subresource content filter from the
     /// blocklist asynchronously into `filter_store_dir`. `debug` enables
     /// developer tools and console output.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         debug: bool,
+        user_agent: String,
         blocklist: Rc<HashSet<String>>,
         permissions: PermissionMirror,
+        site_prefs: SitePrefsMirror,
         filter_store_dir: &Path,
         downloads_dir: &Path,
         mailbox: Mailbox,
@@ -167,7 +180,9 @@ impl WebKitEngine {
         });
 
         Self {
-            settings: default_settings(debug),
+            debug,
+            user_agent,
+            site_prefs,
             context,
             session,
             blocklist,
@@ -227,8 +242,15 @@ impl WebKitEngine {
             })
         };
 
+        // Each view gets its own settings so JavaScript can be toggled per site
+        // without affecting other views. Seed JavaScript from the site preference
+        // for this URI's host.
+        let settings = build_settings(self.debug, &self.user_agent);
+        if let Some(host) = adblock::host_of(uri) {
+            settings.set_enable_javascript(self.site_prefs.borrow().javascript_for(host));
+        }
         let builder = WebView::builder()
-            .settings(&self.settings)
+            .settings(&settings)
             .network_session(&self.session);
         // A same-site related view shares its sibling's web process and context;
         // an unrelated (new-site) view sets the shared context explicitly and
@@ -259,6 +281,7 @@ impl WebKitEngine {
             self.permissions.clone(),
             self.pending_permissions.clone(),
             self.next_permission_id.clone(),
+            self.site_prefs.clone(),
         );
         Box::new(WebKitView { view })
     }
@@ -275,6 +298,7 @@ fn connect_signals(
     permissions: PermissionMirror,
     pending_permissions: PendingPermissions,
     next_permission_id: Rc<Cell<u64>>,
+    site_prefs: SitePrefsMirror,
 ) {
     // Block navigations and subframe loads to ad/tracker domains. This runs
     // synchronously and natively, never through the message loop (design D5).
@@ -319,7 +343,17 @@ fn connect_signals(
     });
 
     let mb = mailbox.clone();
-    view.connect_load_changed(move |_v, event| {
+    view.connect_load_changed(move |v, event| {
+        // Re-apply the per-domain JavaScript preference as the new page begins to
+        // load, so following a link to another site honors that site's rule.
+        if matches!(event, webkit6::LoadEvent::Started)
+            && let Some(settings) = WebViewExt::settings(v)
+            && let Some(host) = v
+                .uri()
+                .and_then(|u| adblock::host_of(&u).map(str::to_string))
+        {
+            settings.set_enable_javascript(site_prefs.borrow().javascript_for(&host));
+        }
         let event = match event {
             webkit6::LoadEvent::Started => LoadEvent::Started,
             webkit6::LoadEvent::Committed => LoadEvent::Committed,
@@ -667,9 +701,13 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// Shared WebKit settings for all views.
-fn default_settings(debug: bool) -> Settings {
+/// Build a settings object for a view. Each view gets its own so JavaScript can
+/// be toggled per site; a non-empty `user_agent` overrides the engine default.
+fn build_settings(debug: bool, user_agent: &str) -> Settings {
     let settings = Settings::new();
+    if !user_agent.is_empty() {
+        settings.set_user_agent(Some(user_agent));
+    }
     settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Always);
     // The in-memory back/forward page cache holds whole pages resident; disabling
     // it trades slightly slower back/forward for a smaller footprint.
@@ -733,6 +771,12 @@ impl EngineView for WebKitView {
 
     fn set_zoom(&self, level: f64) {
         self.view.set_zoom_level(level);
+    }
+
+    fn set_javascript_enabled(&self, enabled: bool) {
+        if let Some(settings) = WebViewExt::settings(&self.view) {
+            settings.set_enable_javascript(enabled);
+        }
     }
 
     fn find(&self, text: &str) {

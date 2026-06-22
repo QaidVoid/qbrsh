@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 
-use crate::core::bindings::default_bindings;
+use crate::core::bindings::build_bindings;
 use crate::core::command::HintTarget;
 use crate::core::completion::CompletionState;
 use crate::core::key::Key;
@@ -249,6 +249,11 @@ impl Tabs {
     /// The URLs of all open tabs, in order.
     pub fn urls(&self) -> Vec<String> {
         self.tabs.iter().map(|t| t.url.clone()).collect()
+    }
+
+    /// Iterate over all open tabs, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &Tab> {
+        self.tabs.iter()
     }
 
     fn push_undo(&mut self, tab: &Tab) {
@@ -621,6 +626,43 @@ impl Default for Session {
     }
 }
 
+/// The built-in fallback search engine, used when no engines are configured or
+/// the configured default names a missing engine.
+const BUILTIN_SEARCH_TEMPLATE: &str = "https://duckduckgo.com/?q={}";
+
+/// Search engine configuration: named engines keyed by short keyword, each a URL
+/// template with a `{}` query placeholder, plus the keyword of the default.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct SearchEngines {
+    /// Keyword of the engine bare queries use.
+    pub default: String,
+    /// Engines by keyword (e.g. `g` -> `https://www.google.com/search?q={}`).
+    pub engines: BTreeMap<String, String>,
+}
+
+impl Default for SearchEngines {
+    fn default() -> Self {
+        let mut engines = BTreeMap::new();
+        engines.insert("ddg".to_string(), BUILTIN_SEARCH_TEMPLATE.to_string());
+        Self {
+            default: "ddg".to_string(),
+            engines,
+        }
+    }
+}
+
+impl SearchEngines {
+    /// The URL template of the default engine, falling back to the built-in
+    /// engine when the configured default names no defined engine.
+    pub fn default_template(&self) -> String {
+        self.engines
+            .get(&self.default)
+            .cloned()
+            .unwrap_or_else(|| BUILTIN_SEARCH_TEMPLATE.to_string())
+    }
+}
+
 /// How a site permission request is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -802,6 +844,52 @@ impl Permissions {
     }
 }
 
+/// Persisted per-domain browsing preferences, stored in the data directory
+/// separately from the user-authored config file. Currently carries the
+/// per-site JavaScript enablement plus its global default.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SitePreferences {
+    /// Whether JavaScript runs on sites without their own rule.
+    #[serde(default = "default_true")]
+    pub javascript_default: bool,
+    /// Per-registrable-domain JavaScript enablement.
+    pub javascript: BTreeMap<String, bool>,
+}
+
+/// Serde default for boolean preference fields that are enabled by default.
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SitePreferences {
+    fn default() -> Self {
+        Self {
+            javascript_default: true,
+            javascript: BTreeMap::new(),
+        }
+    }
+}
+
+impl SitePreferences {
+    /// Resolve whether JavaScript runs for `host`, preferring the most specific
+    /// matching site rule (exact host or longest subdomain suffix) and falling
+    /// back to the global default.
+    pub fn javascript_for(&self, host: &str) -> bool {
+        self.javascript
+            .iter()
+            .filter(|(site, _)| host == site.as_str() || host.ends_with(&format!(".{site}")))
+            .max_by_key(|(site, _)| site.len())
+            .map(|(_, &enabled)| enabled)
+            .unwrap_or(self.javascript_default)
+    }
+
+    /// Set the JavaScript rule for `host`.
+    pub fn set_javascript(&mut self, host: &str, enabled: bool) {
+        self.javascript.insert(host.to_string(), enabled);
+    }
+}
+
 /// A single flattened permission rule for the management view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionRow {
@@ -908,22 +996,34 @@ pub struct HistoryViewState {
 #[serde(default)]
 pub struct Config {
     pub homepage: String,
+    /// URL a blank new tab opens (independent of `homepage`).
+    pub newtab: String,
+    /// User-agent override; empty leaves the engine default in place.
+    pub useragent: String,
     pub colors: Colors,
     pub font: Font,
     pub zoom: Zoom,
     pub session: Session,
+    pub search: SearchEngines,
     pub permissions: Permissions,
+    /// Normal-mode binding overrides (key string -> command), layered over the
+    /// built-in defaults.
+    pub bindings: BTreeMap<String, String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             homepage: "https://duckduckgo.com".to_string(),
+            newtab: "about:blank".to_string(),
+            useragent: String::new(),
             colors: Colors::default(),
             font: Font::default(),
             zoom: Zoom::default(),
             session: Session::default(),
+            search: SearchEngines::default(),
             permissions: Permissions::default(),
+            bindings: BTreeMap::new(),
         }
     }
 }
@@ -934,6 +1034,18 @@ impl Config {
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
         match key {
             "homepage" | "general.homepage" => self.homepage = value.to_string(),
+            "newtab" | "general.newtab" => self.newtab = value.to_string(),
+            "useragent" | "general.useragent" => self.useragent = value.to_string(),
+            "search.default" => self.search.default = value.to_string(),
+            key if key.starts_with("search.engines.") => {
+                let name = &key["search.engines.".len()..];
+                if name.is_empty() {
+                    return Err("search engine needs a name".to_string());
+                }
+                self.search
+                    .engines
+                    .insert(name.to_string(), value.to_string());
+            }
             "colors.background" => self.colors.background = value.to_string(),
             "colors.foreground" => self.colors.foreground = value.to_string(),
             "colors.accent" => self.colors.accent = value.to_string(),
@@ -989,6 +1101,9 @@ pub struct State {
     /// Saved bookmarks.
     pub bookmarks: Vec<Bookmark>,
     pub config: Config,
+    /// Persisted per-domain browsing preferences (data-dir store, separate from
+    /// `config`).
+    pub site_prefs: SitePreferences,
     /// Normal-mode key bindings.
     pub bindings: BindingTrie,
     /// Purposes of in-flight JS evaluations, keyed by request id.
@@ -1021,11 +1136,17 @@ pub struct Search {
 }
 
 impl State {
-    /// Create the initial state from configuration.
+    /// Create the initial state from configuration, building the binding trie
+    /// from the defaults overlaid with the configured overrides. Invalid override
+    /// entries are reported and skipped.
     pub fn new(config: Config) -> Self {
+        let (bindings, errors) = build_bindings(&config.bindings);
+        for e in &errors {
+            eprintln!("[qbrsh] config: {e}");
+        }
         Self {
             config,
-            bindings: default_bindings(),
+            bindings,
             running: true,
             ..Self::default()
         }
@@ -1204,5 +1325,63 @@ mod layout_tests {
         assert!(layout.pane_with_tab(tid(0)).is_some());
         assert!(layout.pane_with_tab(tid(1)).is_some());
         assert!(layout.pane_with_tab(tid(99)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod site_prefs_tests {
+    use super::*;
+
+    #[test]
+    fn javascript_lookup_prefers_most_specific_rule() {
+        let mut p = SitePreferences::default();
+        // The global default is enabled.
+        assert!(p.javascript_for("example.com"));
+        // A site rule overrides the default and applies to subdomains.
+        p.set_javascript("example.com", false);
+        assert!(!p.javascript_for("example.com"));
+        assert!(!p.javascript_for("sub.example.com"));
+        // A more specific subdomain rule wins over the parent.
+        p.set_javascript("sub.example.com", true);
+        assert!(p.javascript_for("sub.example.com"));
+        assert!(!p.javascript_for("example.com"));
+        // Unrelated sites still follow the global default.
+        assert!(p.javascript_for("other.org"));
+    }
+
+    #[test]
+    fn javascript_global_default_applies_without_rules() {
+        let mut p = SitePreferences::default();
+        p.javascript_default = false;
+        assert!(!p.javascript_for("example.com"));
+        // An explicit enable rule beats a disabling default.
+        p.set_javascript("example.com", true);
+        assert!(p.javascript_for("example.com"));
+    }
+
+    #[test]
+    fn site_prefs_round_trip_through_toml() {
+        let mut p = SitePreferences::default();
+        p.javascript_default = false;
+        p.set_javascript("example.com", true);
+        let text = toml::to_string_pretty(&p).unwrap();
+        let back: SitePreferences = toml::from_str(&text).unwrap();
+        assert_eq!(p, back);
+    }
+
+    #[test]
+    fn site_prefs_partial_toml_keeps_default_true() {
+        // A file with only a per-site rule keeps the global default enabled.
+        let back: SitePreferences = toml::from_str("[javascript]\n\"x.test\" = false\n").unwrap();
+        assert!(back.javascript_default);
+        assert!(!back.javascript_for("x.test"));
+    }
+
+    #[test]
+    fn search_default_template_falls_back_to_builtin() {
+        let mut s = SearchEngines::default();
+        // A configured default that names no engine falls back to the builtin.
+        s.default = "missing".to_string();
+        assert_eq!(s.default_template(), BUILTIN_SEARCH_TEMPLATE);
     }
 }

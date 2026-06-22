@@ -47,7 +47,7 @@ cargo run
 | `:` | command line | `<A-1>`..`<A-9>` | focus tab N |
 | `i` / `Esc` | insert / leave mode | `yy` / `yt` | yank url / title |
 | `m` / `b` | save / load quickmark | `M` / `gb` | bookmark / load |
-| `td` | toggle dark mode | `co` | close other tabs |
+| `td` / `tj` | toggle dark mode / JS | `co` | close other tabs |
 | `/` | find in page | `n` / `N` | next / prev match |
 | `zi` / `zo` | zoom in / out | `zz` | reset zoom |
 | `<C-w>s`/`v` | split stacked / side by side | `<C-w>c` / `o` | close / only pane |
@@ -70,9 +70,15 @@ selected).
 `:open`, `:tabopen`, `:back`, `:forward`, `:reload`, `:tab-close/next/prev/focus`,
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
-`:set`, `:config-source`, `:darkmode`, `:session-save/load`, `:plugin-reload`,
+`:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
+`:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
 `:permissions`, `:downloads`, `:history`, `:split`, `:vsplit`, `:close-pane`,
 `:only-pane`, `:focus-pane`, `:focus-pane-prev`, `:quit`.
+
+Browsing is configurable: named search engines with bang prefixes
+(`:open gh ripgrep`), a default engine, remappable keybindings (`[bindings]` plus
+`:bind`/`:unbind`), a configurable new-tab page and user-agent, and a per-domain
+JavaScript toggle. See `docs/guide/configuration.md`.
 
 Panes show multiple tabs at once. `<C-w>s` (or `:split`) divides the focused
 pane top/bottom; `<C-w>v` (or `:vsplit`) divides it side by side. Each split

@@ -6,7 +6,7 @@
 //! by asserting on the returned effects without any GTK or engine present.
 
 use crate::core::msg::{JsPurpose, RequestId};
-use crate::core::state::{PaneId, Permissions, TabId};
+use crate::core::state::{PaneId, Permissions, SitePreferences, TabId};
 use std::path::PathBuf;
 
 /// Severity of a user-facing message.
@@ -100,6 +100,12 @@ pub enum Effect {
     FindClear { tab: TabId },
     /// Persist the per-site permission rules to the data-dir store.
     SavePermissions(Permissions),
+    /// Push the current per-domain site preferences to the engine.
+    SyncSitePrefs(SitePreferences),
+    /// Persist the per-domain site preferences to the data-dir store.
+    SaveSitePrefs(SitePreferences),
+    /// Enable or disable JavaScript for a tab's view.
+    SetJavascript { tab: TabId, enabled: bool },
     /// Cancel an in-flight download by id.
     CancelDownload { id: u64 },
     /// Retry a failed download by id; the source URL is resolved from state.

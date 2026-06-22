@@ -4,8 +4,30 @@
 //! grows as commands (hints, search, bookmarks, zoom, …) are added in their
 //! respective subsystems.
 
+use std::collections::BTreeMap;
+
 use crate::core::key::parse_key_string;
 use crate::core::trie::BindingTrie;
+
+/// Build the effective binding trie from the built-in defaults overlaid with the
+/// user `[bindings]` overrides. Returns the trie and a list of error messages
+/// for entries that could not be applied (unparseable keys or conflicts); those
+/// entries are skipped so the rest of the configuration still loads.
+pub fn build_bindings(overrides: &BTreeMap<String, String>) -> (BindingTrie, Vec<String>) {
+    let mut trie = default_bindings();
+    let mut errors = Vec::new();
+    for (keys, command) in overrides {
+        let parsed = parse_key_string(keys);
+        if parsed.is_empty() {
+            errors.push(format!("invalid binding key: {keys}"));
+            continue;
+        }
+        if let Err(e) = trie.insert_checked(&parsed, command.clone()) {
+            errors.push(format!("binding '{keys}' {e}"));
+        }
+    }
+    (trie, errors)
+}
 
 /// Build the default binding trie.
 pub fn default_bindings() -> BindingTrie {
@@ -76,6 +98,7 @@ pub fn default_bindings() -> BindingTrie {
 
     // Content
     bind("td", "darkmode");
+    bind("tj", "js-toggle");
 
     // Panes (vim-style <C-w> prefix)
     bind("<C-w>s", "split");
@@ -126,5 +149,43 @@ mod tests {
         );
         // The prefix alone is partial (no command yet).
         assert_eq!(trie.lookup(&parse_key_string("<C-w>")), TrieMatch::Partial);
+    }
+
+    #[test]
+    fn override_replaces_default_and_keeps_others() {
+        let mut overrides = BTreeMap::new();
+        overrides.insert("j".to_string(), "scroll up".to_string());
+        let (trie, errors) = build_bindings(&overrides);
+        assert!(errors.is_empty());
+        // The overridden key takes the new command.
+        assert_eq!(
+            trie.lookup(&parse_key_string("j")),
+            TrieMatch::Exact("scroll up".to_string())
+        );
+        // Other defaults are untouched.
+        assert_eq!(
+            trie.lookup(&parse_key_string("k")),
+            TrieMatch::Exact("scroll up".to_string())
+        );
+        assert_eq!(
+            trie.lookup(&parse_key_string("l")),
+            TrieMatch::Exact("scroll right".to_string())
+        );
+    }
+
+    #[test]
+    fn invalid_and_conflicting_overrides_are_reported_and_skipped() {
+        let mut overrides = BTreeMap::new();
+        // `g` conflicts with the default multi-key `gg`.
+        overrides.insert("g".to_string(), "scroll down".to_string());
+        // `<bogus>` does not parse to any key.
+        overrides.insert("<bogus>".to_string(), "nop".to_string());
+        let (trie, errors) = build_bindings(&overrides);
+        assert_eq!(errors.len(), 2);
+        // The default `gg` survives the rejected conflict.
+        assert_eq!(
+            trie.lookup(&parse_key_string("gg")),
+            TrieMatch::Exact("scroll-to-perc 0".to_string())
+        );
     }
 }

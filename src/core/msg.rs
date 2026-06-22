@@ -77,8 +77,9 @@ pub enum Msg {
     InputFocusChanged { tab: TabId, focused: bool },
     /// A tab's web content process terminated unexpectedly.
     Crashed { tab: TabId },
-    /// The configuration file was reloaded from disk.
-    ConfigLoaded(Config),
+    /// The configuration file was reloaded from disk. Boxed because `Config` is
+    /// large relative to the other message variants.
+    ConfigLoaded(Box<Config>),
     /// A session's tab URLs were loaded from disk.
     SessionLoaded(Vec<String>),
     /// Asynchronous results for the history management view, tagged with the

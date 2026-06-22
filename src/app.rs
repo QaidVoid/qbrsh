@@ -18,7 +18,7 @@ use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
 use crate::core::state::{Bookmark, Layout, LayoutNode, Mode, SplitDir, State, TabId};
 use crate::engine::traits::EngineView;
-use crate::engine::webkit::{PermissionMirror, WebKitEngine};
+use crate::engine::webkit::{PermissionMirror, SitePrefsMirror, WebKitEngine};
 use crate::history::History;
 use crate::input;
 use crate::marks;
@@ -38,12 +38,14 @@ struct GtkEffectRunner {
     history: History,
     plugins: PluginRuntime,
     permissions: PermissionMirror,
+    site_prefs: SitePrefsMirror,
     css: gtk4::CssProvider,
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
     sessions_dir: PathBuf,
     autosave_path: PathBuf,
     permissions_path: PathBuf,
+    site_prefs_path: PathBuf,
     mailbox: Mailbox,
 }
 
@@ -542,6 +544,15 @@ impl EffectRunner for GtkEffectRunner {
             Effect::SavePermissions(permissions) => {
                 config::save_permissions(&self.permissions_path, &permissions);
             }
+            Effect::SyncSitePrefs(prefs) => *self.site_prefs.borrow_mut() = prefs,
+            Effect::SaveSitePrefs(prefs) => {
+                config::save_site_prefs(&self.site_prefs_path, &prefs);
+            }
+            Effect::SetJavascript { tab, enabled } => {
+                if let Some(view) = self.views.get(&tab) {
+                    view.set_javascript_enabled(enabled);
+                }
+            }
             Effect::CancelDownload { id } => self.engine.cancel_download(id),
             Effect::RetryDownload { id } => {
                 if let Some(dl) = state.downloads.get(&id) {
@@ -556,7 +567,7 @@ impl EffectRunner for GtkEffectRunner {
                     open_path_external(&path);
                 }
             }
-            Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(config::load())),
+            Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(Box::new(config::load()))),
             Effect::SaveSession { name, urls } => {
                 if let Some(path) = self.session_path(&name) {
                     let _ = std::fs::create_dir_all(&self.sessions_dir);
@@ -746,14 +757,21 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let blocklist = std::rc::Rc::new(crate::adblock::load(&dir.join("adblock")));
     let permissions: PermissionMirror =
         std::rc::Rc::new(std::cell::RefCell::new(config.permissions.clone()));
+    // Load the per-domain site-preference store and share it with the engine.
+    let site_prefs_path = dir.join("site-prefs.toml");
+    let site_prefs_store = config::load_site_prefs(&site_prefs_path).unwrap_or_default();
+    let site_prefs: SitePrefsMirror =
+        std::rc::Rc::new(std::cell::RefCell::new(site_prefs_store.clone()));
     let downloads_dir = directories::UserDirs::new()
         .and_then(|u| u.download_dir().map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| dir.join("downloads"));
     let _ = std::fs::create_dir_all(&downloads_dir);
     let engine = WebKitEngine::new(
         false,
+        config.useragent.clone(),
         blocklist,
         permissions.clone(),
+        site_prefs.clone(),
         &dir.join("content-filters"),
         &downloads_dir,
         mailbox.clone(),
@@ -763,6 +781,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let bookmarks_path = dir.join("bookmarks");
 
     let mut state = State::new(config);
+    state.site_prefs = site_prefs_store;
     state.quickmarks = marks::load_quickmarks(&quickmarks_path)
         .into_iter()
         .collect();
@@ -794,7 +813,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         // Normalize (so a bare host gains a scheme) and load directly into the
         // new view; this mirrors the runtime Open path without depending on
         // which tab is active when the message is later dispatched.
-        let uri = crate::core::update::normalize_target(raw);
+        let uri = crate::core::update::normalize_target(raw, &state.config.search);
         let id = state.tabs.open(&uri);
         if i == active_index {
             active_tab_id = id;
@@ -840,12 +859,14 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         history,
         plugins,
         permissions,
+        site_prefs,
         css,
         quickmarks_path,
         bookmarks_path,
         sessions_dir: dir.join("sessions"),
         autosave_path,
         permissions_path,
+        site_prefs_path,
         mailbox: mailbox.clone(),
     };
     runner.apply_theme(&state);

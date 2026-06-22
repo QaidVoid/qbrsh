@@ -27,6 +27,9 @@ pub trait EngineView {
     /// Set the page zoom level (1.0 = 100%).
     fn set_zoom(&self, level: f64);
 
+    /// Enable or disable JavaScript for this view. Takes effect on the next load.
+    fn set_javascript_enabled(&self, enabled: bool);
+
     /// Search the page for `text`, moving to the first match.
     fn find(&self, text: &str);
 
