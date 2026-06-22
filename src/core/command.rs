@@ -157,6 +157,8 @@ pub enum Command {
     FocusPane { next: bool },
     /// Change the current site's JavaScript preference.
     SiteJavascript(JsToggle),
+    /// Toggle the tab sidebar between expanded and collapsed.
+    TabsToggle,
     /// Bind a key sequence to a command for the running session.
     Bind { keys: String, command: String },
     /// Remove the binding for a key sequence.
@@ -285,6 +287,7 @@ impl Command {
             "js-enable" => Command::SiteJavascript(JsToggle::Enable),
             "js-disable" => Command::SiteJavascript(JsToggle::Disable),
             "js-toggle" => Command::SiteJavascript(JsToggle::Toggle),
+            "tabs-toggle" => Command::TabsToggle,
             "bind" => {
                 let keys = rest
                     .first()
@@ -478,6 +481,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("js-enable", "Enable JavaScript for the current site"),
     ("js-disable", "Disable JavaScript for the current site"),
     ("js-toggle", "Toggle JavaScript for the current site"),
+    ("tabs-toggle", "Collapse or expand the tab sidebar"),
     ("bind", "Bind a key sequence to a command"),
     ("unbind", "Remove a key binding"),
     ("bindings", "List the active key bindings"),

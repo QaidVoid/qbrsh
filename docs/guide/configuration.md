@@ -17,6 +17,10 @@ accent = "#ffd76e"
 family = "monospace"
 size = 11
 
+[tabs]
+width = 200
+collapsed = false
+
 [search]
 default = "ddg"
 
@@ -70,8 +74,21 @@ skipped. See also the runtime `:bind`, `:unbind`, and `:bindings` commands.
 
 ### colors and font
 
-Theme the chrome (tab bar, status bar, command line, completion popup). Colors
+Theme the chrome (tab list, status bar, command line, completion popup). Colors
 are any CSS color string; the font applies to the chrome, not page content.
+
+### tabs
+
+Open tabs are shown as a vertical list down the left of the window, each row led
+by the site's favicon. The active tab's row is highlighted, and when the window
+is split the rows of tabs mounted in a pane are marked. Click a row to focus that
+tab. `tabs.width` sets the list's width in pixels (default 200); you can also
+drag the divider between the list and the page to resize it, or change it live
+with `:set tabs.width`. The list scrolls when the tabs do not fit.
+
+Set `tabs.collapsed` to start as an icon-only rail, and toggle expanded/collapsed
+at any time with `:tabs-toggle` (bound to `,t`). Collapsed rows show only the
+favicon, with the title as a tooltip.
 
 ### permissions
 
@@ -81,7 +98,7 @@ media requests. See [Permissions](/guide/permissions).
 ### per-domain JavaScript
 
 JavaScript runs everywhere by default. Disable or enable it for the current site
-at runtime with `:js-disable`, `:js-enable`, or `:js-toggle` (bound to `tj`),
+at runtime with `:js-disable`, `:js-enable`, or `:js-toggle` (bound to `,j`),
 which reloads the site's tabs. Rules are saved separately from `config.toml` and
 restored on the next launch. Set them directly with `:set javascript.<host>
 true|false` and change the global default with `:set javascript.default
@@ -94,6 +111,7 @@ Use the `:set` command to change a value live:
 ```
 :set colors.accent #ff5f5f
 :set font.size 13
+:set tabs.width 240
 :set permissions.example.com allow
 :set search.default g
 :set search.engines.gh https://github.com/search?q={}

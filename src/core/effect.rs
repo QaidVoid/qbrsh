@@ -74,6 +74,8 @@ pub enum Effect {
     RenderStatus,
     /// Re-render the tab bar from current state.
     RenderTabs,
+    /// Set the tab sidebar's width (the divider position), in pixels.
+    SetTabWidth(u32),
     /// Re-render the completion popup from current state.
     RenderCompletion,
     /// Re-render the permission management list from current state.

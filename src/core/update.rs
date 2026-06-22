@@ -13,7 +13,7 @@ use crate::core::key::{Key, display_sequence, parse_key_string};
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
 use crate::core::state::{
     Bookmark, Download as DownloadRecord, DownloadStatus, Mode, PermissionPolicy, PermissionPrompt,
-    Search, SearchEngines, SearchStatus, SplitDir, State, TabId,
+    Search, SearchEngines, SearchStatus, SplitDir, State, TABS_COLLAPSED_WIDTH, TabId,
 };
 use crate::core::trie::TrieMatch;
 
@@ -429,6 +429,9 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             }
             effects
         }
+
+        // The favicon itself lives in the GUI-side store; just redraw the rows.
+        Msg::FaviconChanged => vec![Effect::RenderTabs],
     }
 }
 
@@ -1359,6 +1362,8 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                     let mut effects = Vec::new();
                     if key.starts_with("permissions.") {
                         effects.push(Effect::SyncPermissions(state.config.permissions.clone()));
+                    } else if key == "tabs.width" {
+                        effects.push(Effect::SetTabWidth(state.config.tabs.width));
                     } else if !key.starts_with("search.") {
                         effects.push(Effect::ApplyTheme);
                     }
@@ -1512,6 +1517,15 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
         }
 
         Command::SiteJavascript(toggle) => site_javascript(state, toggle),
+        Command::TabsToggle => {
+            state.tabs_collapsed = !state.tabs_collapsed;
+            let width = if state.tabs_collapsed {
+                TABS_COLLAPSED_WIDTH
+            } else {
+                state.config.tabs.width
+            };
+            vec![Effect::RenderTabs, Effect::SetTabWidth(width)]
+        }
         Command::Bind { keys, command } => {
             let parsed = parse_key_string(&keys);
             if parsed.is_empty() {
@@ -2044,6 +2058,29 @@ mod tests {
     }
 
     #[test]
+    fn tabs_toggle_flips_flag_and_sets_width() {
+        let mut state = state_with_tab();
+        state.config.tabs.width = 220;
+        assert!(!state.tabs_collapsed);
+        let effects = update(&mut state, Msg::Command(Command::TabsToggle));
+        assert!(state.tabs_collapsed);
+        assert!(effects.iter().any(|e| matches!(e, Effect::RenderTabs)));
+        // Collapsing sets the narrow rail width.
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::SetTabWidth(w) if *w == crate::core::state::TABS_COLLAPSED_WIDTH
+        )));
+        // Toggling back restores the configured width.
+        let effects = update(&mut state, Msg::Command(Command::TabsToggle));
+        assert!(!state.tabs_collapsed);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::SetTabWidth(220)))
+        );
+    }
+
+    #[test]
     fn bind_and_unbind_update_live_bindings() {
         let mut state = state_with_tab();
         update(
@@ -2465,7 +2502,7 @@ mod tests {
     #[test]
     fn open_tab_allocates_and_focuses() {
         let mut state = state_with_tab();
-        let before = state.tabs.len();
+        let before = state.tabs.iter().count();
         let effects = update(
             &mut state,
             Msg::Command(Command::Open {
@@ -2473,7 +2510,7 @@ mod tests {
                 input: "https://a.test".to_string(),
             }),
         );
-        assert_eq!(state.tabs.len(), before + 1);
+        assert_eq!(state.tabs.iter().count(), before + 1);
         assert_eq!(state.tabs.active_index(), before); // newly focused
         assert!(matches!(
             effects[0],
@@ -2621,11 +2658,11 @@ mod tests {
                 input: "https://second.test".to_string(),
             }),
         );
-        assert_eq!(state.tabs.len(), 2);
+        assert_eq!(state.tabs.iter().count(), 2);
         update(&mut state, Msg::Command(Command::TabClose));
-        assert_eq!(state.tabs.len(), 1);
+        assert_eq!(state.tabs.iter().count(), 1);
         let effects = update(&mut state, Msg::Command(Command::Undo));
-        assert_eq!(state.tabs.len(), 2);
+        assert_eq!(state.tabs.iter().count(), 2);
         assert!(effects.iter().any(|e| matches!(
             e,
             Effect::OpenTab { uri, .. } if uri == "https://second.test"
@@ -2636,7 +2673,7 @@ mod tests {
     fn tab_clone_duplicates_active_url() {
         let mut state = state_with_tab();
         let effects = update(&mut state, Msg::Command(Command::TabClone));
-        assert_eq!(state.tabs.len(), 2);
+        assert_eq!(state.tabs.iter().count(), 2);
         assert!(effects.iter().any(|e| matches!(
             e,
             Effect::OpenTab { uri, .. } if uri == "https://example.com"
@@ -2671,9 +2708,9 @@ mod tests {
                 }),
             );
         }
-        assert_eq!(state.tabs.len(), 3);
+        assert_eq!(state.tabs.iter().count(), 3);
         let effects = update(&mut state, Msg::Command(Command::TabOnly));
-        assert_eq!(state.tabs.len(), 1);
+        assert_eq!(state.tabs.iter().count(), 1);
         let closed = effects
             .iter()
             .filter(|e| matches!(e, Effect::CloseTab { .. }))
@@ -2803,7 +2840,7 @@ mod tests {
                 "https://b.test".to_string(),
             ]),
         );
-        assert_eq!(state.tabs.len(), 3);
+        assert_eq!(state.tabs.iter().count(), 3);
         let opened = effects
             .iter()
             .filter(|e| matches!(e, Effect::OpenTab { .. }))
@@ -3258,9 +3295,9 @@ mod tests {
     #[test]
     fn split_opens_new_tab_and_focuses_it() {
         let mut state = state_with_tab();
-        let before = state.tabs.len();
+        let before = state.tabs.iter().count();
         let effects = update(&mut state, Msg::Command(Command::Split));
-        assert_eq!(state.tabs.len(), before + 1);
+        assert_eq!(state.tabs.iter().count(), before + 1);
         assert_eq!(state.layout.panes.len(), 2);
         assert_eq!(
             state.layout.focused_pane().unwrap().tab,

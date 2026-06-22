@@ -62,6 +62,7 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | `config-source` | reload the config file |
 | `darkmode` | toggle web-content dark mode |
 | `js-enable` / `js-disable` / `js-toggle` | change JavaScript for the current site |
+| `tabs-toggle` | collapse or expand the tab sidebar |
 | `bind <keys> <command>` | bind a key sequence to a command |
 | `unbind <keys>` | remove a key binding |
 | `bindings` | list the active key bindings |

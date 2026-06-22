@@ -125,11 +125,6 @@ impl Tabs {
         id
     }
 
-    /// Number of open tabs.
-    pub fn len(&self) -> usize {
-        self.tabs.len()
-    }
-
     /// The active tab, if any.
     pub fn active(&self) -> Option<&Tab> {
         self.tabs.get(self.active)
@@ -612,6 +607,28 @@ impl Default for Zoom {
     }
 }
 
+/// Width of the collapsed (icon-only) tab sidebar, in pixels.
+pub const TABS_COLLAPSED_WIDTH: u32 = 36;
+
+/// Vertical tab list configuration.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct TabBar {
+    /// Width of the vertical tab list in pixels (expanded).
+    pub width: u32,
+    /// Whether the list starts collapsed to an icon-only rail.
+    pub collapsed: bool,
+}
+
+impl Default for TabBar {
+    fn default() -> Self {
+        Self {
+            width: 200,
+            collapsed: false,
+        }
+    }
+}
+
 /// Session restore configuration.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -1003,6 +1020,7 @@ pub struct Config {
     pub colors: Colors,
     pub font: Font,
     pub zoom: Zoom,
+    pub tabs: TabBar,
     pub session: Session,
     pub search: SearchEngines,
     pub permissions: Permissions,
@@ -1020,6 +1038,7 @@ impl Default for Config {
             colors: Colors::default(),
             font: Font::default(),
             zoom: Zoom::default(),
+            tabs: TabBar::default(),
             session: Session::default(),
             search: SearchEngines::default(),
             permissions: Permissions::default(),
@@ -1059,6 +1078,16 @@ impl Config {
                 self.zoom.default = value
                     .parse()
                     .map_err(|_| format!("invalid zoom.default: {value}"))?
+            }
+            "tabs.width" => {
+                self.tabs.width = value
+                    .parse()
+                    .map_err(|_| format!("invalid tabs.width: {value}"))?
+            }
+            "tabs.collapsed" => {
+                self.tabs.collapsed = value
+                    .parse()
+                    .map_err(|_| format!("invalid tabs.collapsed: {value}"))?
             }
             "session.restore" => {
                 self.session.restore = value
@@ -1111,6 +1140,8 @@ pub struct State {
     next_request_id: u64,
     /// Whether web-content dark mode is active.
     pub dark_mode: bool,
+    /// Whether the tab sidebar is collapsed to an icon-only rail.
+    pub tabs_collapsed: bool,
     /// Pending permission prompts; the front item is the one being shown.
     pub prompts: VecDeque<PermissionPrompt>,
     /// State of the permission management list view.
@@ -1144,9 +1175,11 @@ impl State {
         for e in &errors {
             eprintln!("[qbrsh] config: {e}");
         }
+        let tabs_collapsed = config.tabs.collapsed;
         Self {
             config,
             bindings,
+            tabs_collapsed,
             running: true,
             ..Self::default()
         }

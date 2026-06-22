@@ -55,12 +55,14 @@ followed. `Escape` cancels.
 | `M` | bookmark the page |
 | `m` / `b` | save / load a quickmark |
 | `gb` | load a bookmark |
-| `td` | toggle dark mode |
-| `tj` | toggle JavaScript for the current site |
+| `,d` | toggle dark mode |
+| `,j` | toggle JavaScript for the current site |
+| `,t` | collapse / expand the tab sidebar |
 
-Bindings are remappable. Set them in the `[bindings]` section of the config (see
-[Configuration](/guide/configuration)) or at runtime with `:bind`, `:unbind`,
-and `:bindings`.
+Toggles live under the `,` leader because `t` is itself bound (open in a new
+tab) and so cannot also start a longer binding. Bindings are remappable: set them
+in the `[bindings]` section of the config (see [Configuration](/guide/configuration))
+or at runtime with `:bind`, `:unbind`, and `:bindings`.
 
 ## Modes and command line
 

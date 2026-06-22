@@ -47,7 +47,7 @@ cargo run
 | `:` | command line | `<A-1>`..`<A-9>` | focus tab N |
 | `i` / `Esc` | insert / leave mode | `yy` / `yt` | yank url / title |
 | `m` / `b` | save / load quickmark | `M` / `gb` | bookmark / load |
-| `td` / `tj` | toggle dark mode / JS | `co` | close other tabs |
+| `,d` / `,j` | toggle dark mode / JS | `co` | close other tabs |
 | `/` | find in page | `n` / `N` | next / prev match |
 | `zi` / `zo` | zoom in / out | `zz` | reset zoom |
 | `<C-w>s`/`v` | split stacked / side by side | `<C-w>c` / `o` | close / only pane |
@@ -71,7 +71,7 @@ selected).
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
-`:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
+`:tabs-toggle`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
 `:permissions`, `:downloads`, `:history`, `:split`, `:vsplit`, `:close-pane`,
 `:only-pane`, `:focus-pane`, `:focus-pane-prev`, `:quit`.
 
@@ -79,6 +79,14 @@ Browsing is configurable: named search engines with bang prefixes
 (`:open gh ripgrep`), a default engine, remappable keybindings (`[bindings]` plus
 `:bind`/`:unbind`), a configurable new-tab page and user-agent, and a per-domain
 JavaScript toggle. See `docs/guide/configuration.md`.
+
+Open tabs are listed vertically down the left of the window, each led by its
+site favicon: the active tab's row is highlighted, rows of tabs mounted in a pane
+are marked when split, and clicking a row focuses that tab. `[tabs] width` sets
+the list width (or drag the divider between the list and the page, or use `:set
+tabs.width`); it scrolls when the tabs do not fit. `,t` (`:tabs-toggle`)
+collapses the list to an icon-only rail and back; `[tabs] collapsed` sets the
+startup state.
 
 Panes show multiple tabs at once. `<C-w>s` (or `:split`) divides the focused
 pane top/bottom; `<C-w>v` (or `:vsplit`) divides it side by side. Each split

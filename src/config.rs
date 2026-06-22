@@ -81,6 +81,29 @@ mod tests {
     }
 
     #[test]
+    fn tabs_width_sets_rejects_and_defaults() {
+        let mut c = Config::default();
+        assert!(c.set("tabs.width", "260").is_ok());
+        assert_eq!(c.tabs.width, 260);
+        assert!(c.set("tabs.width", "wide").is_err());
+        // A config without a [tabs] section keeps the default width.
+        let partial: Config = toml::from_str("homepage = \"https://x.test\"\n").unwrap();
+        assert_eq!(partial.tabs.width, Config::default().tabs.width);
+    }
+
+    #[test]
+    fn tabs_collapsed_sets_rejects_and_defaults() {
+        let mut c = Config::default();
+        assert!(!c.tabs.collapsed);
+        assert!(c.set("tabs.collapsed", "true").is_ok());
+        assert!(c.tabs.collapsed);
+        assert!(c.set("tabs.collapsed", "maybe").is_err());
+        let partial: Config = toml::from_str("[tabs]\nwidth = 180\n").unwrap();
+        assert!(!partial.tabs.collapsed);
+        assert_eq!(partial.tabs.width, 180);
+    }
+
+    #[test]
     fn set_updates_known_keys_and_rejects_unknown() {
         let mut c = Config::default();
         assert!(c.set("colors.accent", "#123456").is_ok());

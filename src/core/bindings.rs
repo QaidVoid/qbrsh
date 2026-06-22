@@ -96,9 +96,12 @@ pub fn default_bindings() -> BindingTrie {
     bind("zo", "zoom-out");
     bind("zz", "zoom-reset");
 
-    // Content
-    bind("td", "darkmode");
-    bind("tj", "js-toggle");
+    // Content toggles live under the `,` leader: `t` is itself bound (tabopen),
+    // so it cannot also be a binding prefix. The leader has no command of its
+    // own, so the sequence resolves without ambiguity.
+    bind(",d", "darkmode");
+    bind(",j", "js-toggle");
+    bind(",t", "tabs-toggle");
 
     // Panes (vim-style <C-w> prefix)
     bind("<C-w>s", "split");

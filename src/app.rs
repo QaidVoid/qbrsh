@@ -18,7 +18,7 @@ use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
 use crate::core::state::{Bookmark, Layout, LayoutNode, Mode, SplitDir, State, TabId};
 use crate::engine::traits::EngineView;
-use crate::engine::webkit::{PermissionMirror, SitePrefsMirror, WebKitEngine};
+use crate::engine::webkit::{FaviconStore, PermissionMirror, SitePrefsMirror, WebKitEngine};
 use crate::history::History;
 use crate::input;
 use crate::marks;
@@ -39,6 +39,7 @@ struct GtkEffectRunner {
     plugins: PluginRuntime,
     permissions: PermissionMirror,
     site_prefs: SitePrefsMirror,
+    favicons: FaviconStore,
     css: gtk4::CssProvider,
     quickmarks_path: PathBuf,
     bookmarks_path: PathBuf,
@@ -139,11 +140,16 @@ impl GtkEffectRunner {
     fn apply_theme(&self, state: &State) {
         let c = &state.config;
         let css = format!(
-            "#qbrsh-tabbar, #qbrsh-status, #qbrsh-cmd, #qbrsh-completion {{ \
+            "#qbrsh-tabs, #qbrsh-tabs-scroll, #qbrsh-status, #qbrsh-cmd, #qbrsh-completion {{ \
                 background-color: {bg}; color: {fg}; \
                 font-family: {ff}; font-size: {fs}px; }}\n\
-             #qbrsh-tabbar, #qbrsh-status {{ padding: 2px 6px; }}\n\
+             #qbrsh-status {{ padding: 2px 6px; }}\n\
              #qbrsh-completion label {{ padding: 1px 6px; }}\n\
+             #qbrsh-tabs .tab-row {{ padding: 3px 8px; }}\n\
+             #qbrsh-tabs .tab-collapsed {{ padding: 3px 0; }}\n\
+             #qbrsh-tabs .tab-mounted {{ border-left: 2px solid {accent}; }}\n\
+             #qbrsh-tabs .tab-active {{ background-color: {accent}; }}\n\
+             #qbrsh-tabs .tab-active label {{ color: {bg}; }}\n\
              #qbrsh-layout {{ background-color: {bg}; }}\n\
              .pane {{ padding: 0; }}\n\
              .pane-focused {{ outline: 2px solid {accent}; outline-offset: -2px; }}",
@@ -395,8 +401,66 @@ impl GtkEffectRunner {
     }
 
     fn render_tabs(&self, state: &State) {
-        let n = state.tabs.len();
-        let idx = state.tabs.active_index() + 1;
+        // Rebuild the row list; clearing drops each row's click gesture.
+        while let Some(child) = self.ui.tab_list.first_child() {
+            self.ui.tab_list.remove(&child);
+        }
+        let active = state.tabs.active_id();
+        let split = state.layout.panes.len() > 1;
+        let collapsed = state.tabs_collapsed;
+        let favicons = self.favicons.borrow();
+        for (i, tab) in state.tabs.iter().enumerate() {
+            let text = if tab.title.is_empty() {
+                tab.url.as_str()
+            } else {
+                tab.title.as_str()
+            };
+            // Each row is a horizontal box: a favicon (or placeholder) and, when
+            // expanded, the title. The gesture and state classes live on the row.
+            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            row.add_css_class("tab-row");
+            if Some(tab.id) == active {
+                row.add_css_class("tab-active");
+            }
+            if split && state.layout.pane_with_tab(tab.id).is_some() {
+                row.add_css_class("tab-mounted");
+            }
+
+            let icon = match favicons.get(&tab.id) {
+                Some(texture) => gtk4::Image::from_paintable(Some(texture)),
+                None => gtk4::Image::from_icon_name("text-x-generic-symbolic"),
+            };
+            icon.set_pixel_size(16);
+            row.append(&icon);
+
+            if collapsed {
+                // Icon-only rail: center the icon, tighten padding, keep the
+                // title as a tooltip.
+                row.add_css_class("tab-collapsed");
+                icon.set_hexpand(true);
+                icon.set_halign(gtk4::Align::Center);
+                row.set_tooltip_text(Some(text));
+            } else {
+                let label = gtk4::Label::new(Some(text));
+                label.set_xalign(0.0);
+                label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                label.set_width_chars(0);
+                label.set_hexpand(true);
+                row.append(&label);
+            }
+
+            // Click focuses the tab through the same path as keyboard switching.
+            let gesture = gtk4::GestureClick::new();
+            gesture.set_button(gtk4::gdk::BUTTON_PRIMARY);
+            let mailbox = self.mailbox.clone();
+            let index = i + 1; // TabSelect is 1-based.
+            gesture.connect_released(move |_g, _n, _x, _y| {
+                mailbox.send(Msg::Command(Command::TabSelect(index)));
+            });
+            row.add_controller(gesture);
+            self.ui.tab_list.append(&row);
+        }
+        drop(favicons);
         let title = state
             .tabs
             .active()
@@ -408,14 +472,6 @@ impl GtkEffectRunner {
                 }
             })
             .unwrap_or_default();
-        let panes = if state.layout.panes.len() > 1 {
-            format!(" [{} panes]", state.layout.panes.len())
-        } else {
-            String::new()
-        };
-        self.ui
-            .tabbar
-            .set_text(&format!("[{idx}/{n}] {title}{panes}"));
         let win_title = if title.is_empty() { "qbrsh" } else { &title };
         self.ui
             .window
@@ -515,6 +571,7 @@ impl EffectRunner for GtkEffectRunner {
                     wrapper.unparent();
                 }
                 self.views.remove(&tab);
+                self.favicons.borrow_mut().remove(&tab);
             }
             Effect::FocusPane { pane: _ } => self.apply_focus(state),
             Effect::RenderLayout => self.render_layout(state),
@@ -617,6 +674,7 @@ impl EffectRunner for GtkEffectRunner {
             }
             Effect::RenderStatus => self.render_status(state),
             Effect::RenderTabs => self.render_tabs(state),
+            Effect::SetTabWidth(width) => self.ui.split.set_position(width as i32),
             Effect::RenderCompletion => self.render_completion(state),
             Effect::RenderPermissions => self.render_permissions(state),
             Effect::RenderDownloads => self.render_downloads(state),
@@ -762,6 +820,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     let site_prefs_store = config::load_site_prefs(&site_prefs_path).unwrap_or_default();
     let site_prefs: SitePrefsMirror =
         std::rc::Rc::new(std::cell::RefCell::new(site_prefs_store.clone()));
+    let favicons: FaviconStore = std::rc::Rc::new(std::cell::RefCell::new(HashMap::new()));
     let downloads_dir = directories::UserDirs::new()
         .and_then(|u| u.download_dir().map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| dir.join("downloads"));
@@ -772,6 +831,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         blocklist,
         permissions.clone(),
         site_prefs.clone(),
+        favicons.clone(),
         &dir.join("content-filters"),
         &downloads_dir,
         mailbox.clone(),
@@ -860,6 +920,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         plugins,
         permissions,
         site_prefs,
+        favicons,
         css,
         quickmarks_path,
         bookmarks_path,
@@ -873,6 +934,14 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     runner.render_layout(&state);
     runner.render_status(&state);
     runner.render_tabs(&state);
+    // Seed the sidebar width (collapsed rail or configured width); the divider
+    // is draggable from here on.
+    let initial_tab_width = if state.tabs_collapsed {
+        crate::core::state::TABS_COLLAPSED_WIDTH
+    } else {
+        state.config.tabs.width
+    };
+    ui.split.set_position(initial_tab_width as i32);
     eprintln!("[qbrsh] startup {}", memory_report(runner.views.len()));
 
     let mode_mirror = input::install(&ui, &mailbox);

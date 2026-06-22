@@ -38,6 +38,11 @@ pub type PermissionMirror = Rc<RefCell<Permissions>>;
 /// and on each top-level navigation.
 pub type SitePrefsMirror = Rc<RefCell<SitePreferences>>;
 
+/// GUI-side store of per-tab favicons, written by the engine's favicon-notify
+/// handler and read by the tab-list renderer. The texture is a GUI object, so it
+/// stays out of the pure core (which only learns that a redraw is due).
+pub type FaviconStore = Rc<RefCell<HashMap<TabId, gtk4::gdk::Texture>>>;
+
 /// Live download handles held by the engine for cancel, keyed by id.
 type DownloadMap = Rc<RefCell<HashMap<u64, Download>>>;
 /// Ids of user-cancelled downloads, so their in-flight failure is reported as a
@@ -62,6 +67,8 @@ pub struct WebKitEngine {
     user_agent: String,
     /// Per-domain site preferences read when building a view and on navigation.
     site_prefs: SitePrefsMirror,
+    /// Per-tab favicons, updated from each view's favicon-notify signal.
+    favicons: FaviconStore,
     /// Web context shared by all views; carries the cache model and web-process
     /// memory-pressure settings. Views relate to a live sibling and inherit it.
     context: WebContext,
@@ -100,6 +107,7 @@ impl WebKitEngine {
         blocklist: Rc<HashSet<String>>,
         permissions: PermissionMirror,
         site_prefs: SitePrefsMirror,
+        favicons: FaviconStore,
         filter_store_dir: &Path,
         downloads_dir: &Path,
         mailbox: Mailbox,
@@ -146,6 +154,10 @@ impl WebKitEngine {
         // Pin the secure default so it cannot silently regress: certificate
         // errors block the load rather than being ignored.
         session.set_tls_errors_policy(TLSErrorsPolicy::Fail);
+        // Enable the favicon database so views deliver per-site icons.
+        if let Some(dm) = session.website_data_manager() {
+            dm.set_favicons_enabled(true);
+        }
 
         // Save downloads to the downloads directory with a safe, de-duplicated
         // name, reporting lifecycle events as messages.
@@ -183,6 +195,7 @@ impl WebKitEngine {
             debug,
             user_agent,
             site_prefs,
+            favicons,
             context,
             session,
             blocklist,
@@ -282,6 +295,7 @@ impl WebKitEngine {
             self.pending_permissions.clone(),
             self.next_permission_id.clone(),
             self.site_prefs.clone(),
+            self.favicons.clone(),
         );
         Box::new(WebKitView { view })
     }
@@ -299,6 +313,7 @@ fn connect_signals(
     pending_permissions: PendingPermissions,
     next_permission_id: Rc<Cell<u64>>,
     site_prefs: SitePrefsMirror,
+    favicons: FaviconStore,
 ) {
     // Block navigations and subframe loads to ad/tracker domains. This runs
     // synchronously and natively, never through the message loop (design D5).
@@ -379,6 +394,20 @@ fn connect_signals(
             tab,
             title: v.title().map(|t| t.to_string()).unwrap_or_default(),
         });
+    });
+
+    // Publish the view's favicon to the GUI-side store and ask for a redraw.
+    let mb = mailbox.clone();
+    view.connect_favicon_notify(move |v| {
+        match v.favicon() {
+            Some(texture) => {
+                favicons.borrow_mut().insert(tab, texture);
+            }
+            None => {
+                favicons.borrow_mut().remove(&tab);
+            }
+        }
+        mb.send(Msg::FaviconChanged);
     });
 
     let mb = mailbox.clone();

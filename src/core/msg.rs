@@ -77,6 +77,9 @@ pub enum Msg {
     InputFocusChanged { tab: TabId, focused: bool },
     /// A tab's web content process terminated unexpectedly.
     Crashed { tab: TabId },
+    /// A favicon became available or changed (the icon itself lives in the
+    /// GUI-side store; this only triggers a tab-list redraw).
+    FaviconChanged,
     /// The configuration file was reloaded from disk. Boxed because `Config` is
     /// large relative to the other message variants.
     ConfigLoaded(Box<Config>),
