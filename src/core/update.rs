@@ -30,6 +30,9 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             Mode::Permissions => handle_permissions_key(state, key),
             Mode::Downloads => handle_downloads_key(state, key),
             Mode::History => handle_history_key(state, key),
+            // The controller forwards keys to the page in passthrough mode, so
+            // the core should never act on one even if it slips through.
+            Mode::Passthrough => Vec::new(),
             _ => handle_key(state, key),
         },
         Msg::Command(cmd) => handle_command(state, cmd),
@@ -2556,6 +2559,26 @@ mod tests {
         let effects = update(&mut state, Msg::Command(Command::FocusInput(1)));
         assert!(effects.iter().any(|e| matches!(e, Effect::EvalJs { .. })));
         assert_eq!(state.mode.current, Mode::Insert);
+    }
+
+    #[test]
+    fn passthrough_mode_enter_leave_and_key_noop() {
+        let mut state = state_with_tab();
+        update(
+            &mut state,
+            Msg::Command(Command::ModeEnter(Mode::Passthrough)),
+        );
+        assert_eq!(state.mode.current, Mode::Passthrough);
+
+        // An ordinary key in passthrough fires no Normal-mode binding and does
+        // nothing in the core.
+        let effects = update(&mut state, Msg::Key(Key::plain("j")));
+        assert!(effects.is_empty());
+        assert_eq!(state.mode.current, Mode::Passthrough);
+
+        // Escape leaves passthrough back to Normal.
+        update(&mut state, Msg::Command(Command::ModeLeave));
+        assert_eq!(state.mode.current, Mode::Normal);
     }
 
     #[test]

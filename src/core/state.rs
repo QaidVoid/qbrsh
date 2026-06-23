@@ -31,6 +31,8 @@ pub enum Mode {
     Downloads,
     /// Browsing the history management list.
     History,
+    /// Every key is forwarded to the page until the user leaves with Escape.
+    Passthrough,
 }
 
 /// Tracks the current mode and the one to return to on leave.

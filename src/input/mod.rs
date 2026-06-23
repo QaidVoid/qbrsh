@@ -57,6 +57,17 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
             mb.send(Msg::Command(Command::ModeLeave));
             return glib::Propagation::Stop;
         }
+        // Ctrl-z hands the keyboard to the page wholesale (passthrough mode),
+        // from Normal or Insert. It is consumed so it neither reaches the page
+        // nor fires a binding.
+        if key.sym == "z"
+            && key.ctrl
+            && !key.alt
+            && matches!(snapshot.mode, Mode::Normal | Mode::Insert)
+        {
+            mb.send(Msg::Command(Command::ModeEnter(Mode::Passthrough)));
+            return glib::Propagation::Stop;
+        }
         match snapshot.mode {
             // The command entry handles typing and Enter; Tab cycles completion,
             // and Space applies the highlighted candidate (else a literal space).
@@ -75,8 +86,9 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
                 }
                 glib::Propagation::Proceed
             }
-            // Insert mode forwards keys to the page.
-            Mode::Insert => glib::Propagation::Proceed,
+            // Insert and passthrough modes forward keys to the page. (Escape,
+            // handled above, is the only key passthrough intercepts.)
+            Mode::Insert | Mode::Passthrough => glib::Propagation::Proceed,
             // Normal, Hint, Prompt, Permissions, Downloads, and History modes
             // route every key through the core.
             Mode::Normal

@@ -54,6 +54,7 @@ cargo run
 | `<C-w>w` / `W` | next / prev pane | `<C-c>` / `<F11>` | stop load / fullscreen |
 | `gu` / `gU` | up path / host root | `]]` / `[[` | next / prev page |
 | `<C-a>` / `<C-x>` | URL number + / - | `gi` | focus first input |
+| `<C-z>` | passthrough mode | | |
 
 Counts work (e.g. `5j`). Type `/text` on the command line to search the page,
 then `n` to step forward through matches (wrapping at the end). `N` steps
@@ -66,6 +67,11 @@ move the highlight through the completion list (your typed text stays in the
 command line), `Space` applies the highlighted item so you can continue with an
 argument, and `Enter` runs the highlighted item (or the typed text if none is
 selected).
+
+Press `<C-z>` (from Normal or Insert mode) to enter passthrough mode, where every
+key goes straight to the page and no binding fires, so web apps that need keys
+like `j` or `/` receive them. The status bar shows `-- PASS THROUGH --` while it
+is active. Press `Esc` to return to Normal mode.
 
 ## Commands
 

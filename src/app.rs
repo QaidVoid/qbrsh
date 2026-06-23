@@ -84,6 +84,7 @@ impl GtkEffectRunner {
             Mode::Permissions => "PERMISSIONS",
             Mode::Downloads => "DOWNLOADS",
             Mode::History => "HISTORY",
+            Mode::Passthrough => "PASS THROUGH",
         };
         let url = state
             .tabs

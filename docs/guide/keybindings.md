@@ -76,8 +76,13 @@ or at runtime with `:bind`, `:unbind`, and `:bindings`.
 | Key | Action |
 | --- | --- |
 | `i` | enter Insert mode |
+| `<C-z>` | enter passthrough mode (every key goes to the page) |
 | `Escape` | leave the current mode |
 | `:` | open the command line |
+
+In passthrough mode every key is delivered to the page and no binding fires, so
+web apps that need keys like `j` or `/` receive them. The status bar shows
+`-- PASS THROUGH --` while it is active. Press `Escape` to return to Normal mode.
 
 In the command line, `Tab` and `Shift-Tab` move the highlight through the
 completion list (your typed text stays put), `Space` applies the highlighted
