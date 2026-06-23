@@ -1168,6 +1168,8 @@ pub struct State {
     pub dark_mode: bool,
     /// Whether the tab sidebar is collapsed to an icon-only rail.
     pub tabs_collapsed: bool,
+    /// Whether the top-level window is fullscreen.
+    pub fullscreen: bool,
     /// Pending permission prompts; the front item is the one being shown.
     pub prompts: VecDeque<PermissionPrompt>,
     /// State of the permission management list view.

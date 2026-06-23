@@ -1565,6 +1565,12 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             };
             vec![Effect::RenderTabs, Effect::SetTabWidth(width)]
         }
+        Command::Fullscreen => {
+            state.fullscreen = !state.fullscreen;
+            vec![Effect::ToggleFullscreen {
+                fullscreen: state.fullscreen,
+            }]
+        }
         Command::Bind { keys, command } => {
             let parsed = parse_key_string(&keys);
             if parsed.is_empty() {
@@ -2171,6 +2177,27 @@ mod tests {
             effects
                 .iter()
                 .any(|e| matches!(e, Effect::SetTabWidth(220)))
+        );
+    }
+
+    #[test]
+    fn fullscreen_toggles_flag_and_emits_effect() {
+        let mut state = state_with_tab();
+        assert!(!state.fullscreen);
+        let effects = update(&mut state, Msg::Command(Command::Fullscreen));
+        assert!(state.fullscreen);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::ToggleFullscreen { fullscreen: true }))
+        );
+        // Toggling again returns to the original state.
+        let effects = update(&mut state, Msg::Command(Command::Fullscreen));
+        assert!(!state.fullscreen);
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::ToggleFullscreen { fullscreen: false }))
         );
     }
 

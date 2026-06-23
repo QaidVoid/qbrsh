@@ -690,6 +690,13 @@ impl EffectRunner for GtkEffectRunner {
             Effect::RenderStatus => self.render_status(state),
             Effect::RenderTabs => self.render_tabs(state),
             Effect::SetTabWidth(width) => self.ui.split.set_position(width as i32),
+            Effect::ToggleFullscreen { fullscreen } => {
+                if fullscreen {
+                    self.ui.window.fullscreen();
+                } else {
+                    self.ui.window.unfullscreen();
+                }
+            }
             Effect::RenderCompletion => self.render_completion(state),
             Effect::RenderPermissions => self.render_permissions(state),
             Effect::RenderDownloads => self.render_downloads(state),

@@ -51,7 +51,7 @@ cargo run
 | `/` | find in page | `n` / `N` | next / prev match |
 | `zi` / `zo` | zoom in / out | `zz` | reset zoom |
 | `<C-w>s`/`v` | split stacked / side by side | `<C-w>c` / `o` | close / only pane |
-| `<C-w>w` / `W` | next / prev pane | | |
+| `<C-w>w` / `W` | next / prev pane | `<C-c>` / `<F11>` | stop load / fullscreen |
 
 Counts work (e.g. `5j`). Type `/text` on the command line to search the page,
 then `n` to step forward through matches (wrapping at the end). `N` steps
@@ -71,7 +71,7 @@ selected).
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
-`:tabs-toggle`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
+`:tabs-toggle`, `:fullscreen`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
 `:permissions`, `:downloads`, `:history`, `:split`, `:vsplit`, `:close-pane`,
 `:only-pane`, `:focus-pane`, `:focus-pane-prev`, `:quit`.
 

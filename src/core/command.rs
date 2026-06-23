@@ -176,6 +176,8 @@ pub enum Command {
     SiteJavascript(JsToggle),
     /// Toggle the tab sidebar between expanded and collapsed.
     TabsToggle,
+    /// Toggle the top-level window between fullscreen and normal.
+    Fullscreen,
     /// Clear website data of the given scope.
     ClearData(ClearScope),
     /// Bind a key sequence to a command for the running session.
@@ -311,6 +313,7 @@ impl Command {
             "js-disable" => Command::SiteJavascript(JsToggle::Disable),
             "js-toggle" => Command::SiteJavascript(JsToggle::Toggle),
             "tabs-toggle" => Command::TabsToggle,
+            "fullscreen" => Command::Fullscreen,
             "clear" => Command::ClearData(match rest.first() {
                 None | Some(&"all") => ClearScope::All,
                 Some(&"cookies") => ClearScope::Cookies,
@@ -514,6 +517,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("js-disable", "Disable JavaScript for the current site"),
     ("js-toggle", "Toggle JavaScript for the current site"),
     ("tabs-toggle", "Collapse or expand the tab sidebar"),
+    ("fullscreen", "Toggle window fullscreen"),
     (
         "clear",
         "Clear website data (all/cookies/cache/storage/site)",

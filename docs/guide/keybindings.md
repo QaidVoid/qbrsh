@@ -21,6 +21,8 @@ Counts work where they make sense, for example `5j` scrolls down five steps.
 | --- | --- |
 | `H` / `L` | back / forward |
 | `r` / `R` | reload / reload bypassing cache |
+| `<C-c>` | stop loading the current page |
+| `<F11>` | toggle window fullscreen |
 | `o` | open a URL in the current tab |
 | `O` | open, prefilled with the current URL |
 

@@ -51,6 +51,7 @@ pub fn default_bindings() -> BindingTrie {
     bind("L", "forward");
     bind("r", "reload");
     bind("R", "reload --force");
+    bind("<C-c>", "stop");
 
     // Tabs
     bind("J", "tab-next");
@@ -112,6 +113,9 @@ pub fn default_bindings() -> BindingTrie {
     bind("<C-w>w", "focus-pane");
     bind("<C-w>W", "focus-pane-prev");
 
+    // Window
+    bind("<F11>", "fullscreen");
+
     // Mode switching
     bind("i", "mode-enter insert");
     bind("Escape", "mode-leave");
@@ -153,6 +157,19 @@ mod tests {
         );
         // The prefix alone is partial (no command yet).
         assert_eq!(trie.lookup(&parse_key_string("<C-w>")), TrieMatch::Partial);
+    }
+
+    #[test]
+    fn stop_and_fullscreen_bindings_resolve() {
+        let trie = default_bindings();
+        assert_eq!(
+            trie.lookup(&parse_key_string("<C-c>")),
+            TrieMatch::Exact("stop".to_string())
+        );
+        assert_eq!(
+            trie.lookup(&parse_key_string("<F11>")),
+            TrieMatch::Exact("fullscreen".to_string())
+        );
     }
 
     #[test]
