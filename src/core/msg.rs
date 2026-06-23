@@ -35,6 +35,8 @@ pub enum JsPurpose {
     HintsShown,
     /// Result is the href of a followed hint, to open in a new tab.
     HintHref,
+    /// Result is the resolved next/previous page URL, to open in the current tab.
+    PageRelLink,
 }
 
 /// A single unit of change entering the core.

@@ -52,6 +52,8 @@ cargo run
 | `zi` / `zo` | zoom in / out | `zz` | reset zoom |
 | `<C-w>s`/`v` | split stacked / side by side | `<C-w>c` / `o` | close / only pane |
 | `<C-w>w` / `W` | next / prev pane | `<C-c>` / `<F11>` | stop load / fullscreen |
+| `gu` / `gU` | up path / host root | `]]` / `[[` | next / prev page |
+| `<C-a>` / `<C-x>` | URL number + / - | `gi` | focus first input |
 
 Counts work (e.g. `5j`). Type `/text` on the command line to search the page,
 then `n` to step forward through matches (wrapping at the end). `N` steps
@@ -67,7 +69,8 @@ selected).
 
 ## Commands
 
-`:open`, `:tabopen`, `:private`, `:back`, `:forward`, `:reload`, `:tab-close/next/prev/focus`,
+`:open`, `:tabopen`, `:private`, `:back`, `:forward`, `:reload`, `:url-up`, `:url-root`,
+`:page-next`, `:page-prev`, `:url-increment`, `:focus-input`, `:tab-close/next/prev/focus`,
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,

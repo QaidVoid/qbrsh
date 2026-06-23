@@ -14,6 +14,11 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | `back` / `forward` | move through history |
 | `reload` / `reload --force` | reload, optionally bypassing cache |
 | `stop` | stop loading |
+| `url-up [n]` | go up one (or `n`) URL path segments |
+| `url-root` | go to the host root |
+| `page-next` / `page-prev` | follow the next / previous page link |
+| `url-increment [step]` | step the last number in the URL (negative to decrement) |
+| `focus-input [n]` | focus the first (or `n`th) text input in insert mode |
 
 ## Scrolling
 

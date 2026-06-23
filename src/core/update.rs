@@ -180,6 +180,25 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                     }
                     Vec::new()
                 }
+                JsPurpose::PageRelLink => {
+                    if let Ok(url) = result
+                        && !url.is_empty()
+                    {
+                        // The URL is page-controlled; allow only web schemes, as
+                        // the hint-href path does.
+                        if !crate::core::command::is_safe_external_target(&url) {
+                            return vec![Effect::ShowMessage {
+                                level: MessageLevel::Error,
+                                text: format!("blocked unsafe link: {url}"),
+                            }];
+                        }
+                        return vec![Effect::LoadUri {
+                            tab,
+                            uri: normalize_target(&url, &state.config.search),
+                        }];
+                    }
+                    Vec::new()
+                }
             }
         }
 
@@ -1009,6 +1028,42 @@ fn fire_js(state: &mut State, script: String) -> Vec<Effect> {
     }]
 }
 
+/// Apply a pure URL transform to the active tab's URL and navigate the current
+/// tab to the result. No effect when there is no active tab or the transform
+/// yields nothing (for example `gu` already at the root, or `<C-a>` on a URL
+/// with no number).
+fn navigate_derived(state: &State, f: impl FnOnce(&str) -> Option<String>) -> Vec<Effect> {
+    let Some(tab) = state.tabs.active_id() else {
+        return Vec::new();
+    };
+    let Some(url) = state.tabs.active().map(|t| t.url.clone()) else {
+        return Vec::new();
+    };
+    match f(&url) {
+        Some(derived) => vec![Effect::LoadUri {
+            tab,
+            uri: normalize_target(&derived, &state.config.search),
+        }],
+        None => Vec::new(),
+    }
+}
+
+/// Resolve and follow the page's next or previous link by evaluating JS in the
+/// active tab; the result returns as a `PageRelLink` message.
+fn rel_link_command(state: &mut State, next: bool) -> Vec<Effect> {
+    let Some(tab) = state.tabs.active_id() else {
+        return Vec::new();
+    };
+    let id = state.alloc_request_id();
+    state.pending_js.insert(id, JsPurpose::PageRelLink);
+    vec![Effect::EvalJs {
+        id,
+        tab,
+        script: rel_link_script(next),
+        purpose: JsPurpose::PageRelLink,
+    }]
+}
+
 /// Substitute command-line variables (`{url}`, `{title}`) from the active tab.
 fn substitute_vars(state: &State, text: &str) -> String {
     let (url, title) = state
@@ -1051,6 +1106,20 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             with_active(state, |tab| vec![Effect::Reload { tab, bypass_cache }])
         }
         Command::Stop => with_active(state, |tab| vec![Effect::Stop { tab }]),
+        Command::UrlUp(segments) => navigate_derived(state, |url| url_path_up(url, segments)),
+        Command::UrlRoot => navigate_derived(state, url_host_root),
+        Command::UrlIncrement(step) => navigate_derived(state, |url| url_step_number(url, step)),
+        Command::PageNext => rel_link_command(state, true),
+        Command::PagePrev => rel_link_command(state, false),
+        Command::FocusInput(n) => {
+            if state.tabs.active_id().is_none() {
+                return Vec::new();
+            }
+            let mut effects = fire_js(state, focus_input_script(n));
+            state.mode.enter(Mode::Insert);
+            effects.push(Effect::RenderStatus);
+            effects
+        }
 
         Command::Scroll(dir, count) => scroll(state, scroll_script(dir, count.max(1))),
         Command::ScrollPage { down, half } => {
@@ -1873,6 +1942,108 @@ fn scroll_script(dir: ScrollDir, count: u32) -> String {
     format!("window.scrollBy({}, {});", ux * dist, uy * dist)
 }
 
+/// Script that resolves the page's next or previous link to an absolute URL,
+/// preferring a declared `rel` link and falling back to common link labels.
+/// Evaluates to the URL string, or an empty string when none is found.
+fn rel_link_script(next: bool) -> String {
+    let (rel, labels) = if next {
+        ("next", r#"["next","forward","older"]"#)
+    } else {
+        ("prev", r#"["prev","previous","back","newer"]"#)
+    };
+    format!(
+        r#"(function(){{
+  var rel={rel}, labels={labels};
+  var el=document.querySelector('link[rel~="'+rel+'"], a[rel~="'+rel+'"]');
+  if(el && el.href) return el.href;
+  var anchors=document.querySelectorAll('a[href]');
+  for(var i=0;i<anchors.length;i++){{
+    var a=anchors[i];
+    var t=(a.textContent||'').trim().toLowerCase();
+    var aria=(a.getAttribute('aria-label')||'').trim().toLowerCase();
+    for(var j=0;j<labels.length;j++){{
+      if(t===labels[j]||aria===labels[j]) return a.href;
+    }}
+  }}
+  return '';
+}})()"#,
+        rel = js_arg(rel),
+    )
+}
+
+/// Script that focuses the `n`th (1-based) visible text-like input on the page.
+/// Fire-and-forget; a no-op when no such input exists.
+fn focus_input_script(n: u32) -> String {
+    let index = n.max(1) - 1;
+    format!(
+        r#"(function(){{
+  var sel='input[type=text],input[type=search],input[type=email],input[type=url],input[type=tel],input[type=password],input:not([type]),textarea,[contenteditable=true],[contenteditable=""]';
+  var els=Array.prototype.filter.call(document.querySelectorAll(sel), function(e){{
+    return e.offsetParent!==null || e.getClientRects().length>0;
+  }});
+  var el=els[{index}];
+  if(el) el.focus();
+}})()"#
+    )
+}
+
+/// Split a full URL into its `scheme://authority` prefix and the remainder
+/// (path, query, and fragment). Returns `None` when there is no `://` authority.
+fn split_authority(url: &str) -> Option<(&str, &str)> {
+    let after = url.find("://")? + 3;
+    let rest_start = url[after..]
+        .find(['/', '?', '#'])
+        .map(|i| after + i)
+        .unwrap_or(url.len());
+    Some((&url[..rest_start], &url[rest_start..]))
+}
+
+/// Navigate `url` up `segments` path segments, dropping the query and fragment.
+/// Returns the host root when already at or above the path root. `None` when the
+/// URL has no `://` authority to anchor on.
+fn url_path_up(url: &str, segments: u32) -> Option<String> {
+    let (root, rest) = split_authority(url)?;
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let mut segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    for _ in 0..segments.max(1) {
+        if segs.pop().is_none() {
+            break;
+        }
+    }
+    let mut out = String::from(root);
+    for s in &segs {
+        out.push('/');
+        out.push_str(s);
+    }
+    Some(out)
+}
+
+/// The host root (`scheme://authority`) of `url`. `None` when the URL has no
+/// `://` authority or is already at the root with nothing to drop.
+fn url_host_root(url: &str) -> Option<String> {
+    let (root, rest) = split_authority(url)?;
+    if rest.is_empty() || rest == "/" {
+        None
+    } else {
+        Some(root.to_string())
+    }
+}
+
+/// Step the last run of ASCII digits in `url` by `step`, clamping at zero and
+/// preserving the original zero-padding width. `None` when the URL has no digits.
+fn url_step_number(url: &str, step: i32) -> Option<String> {
+    let bytes = url.as_bytes();
+    let end = url.rfind(|c: char| c.is_ascii_digit())? + 1;
+    let mut start = end;
+    while start > 0 && bytes[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    let width = end - start;
+    let value: i64 = url[start..end].parse().ok()?;
+    let next = (value + step as i64).max(0);
+    Some(format!("{}{next:0width$}{}", &url[..start], &url[end..]))
+}
+
 /// Normalize command-line input into a navigable URI.
 ///
 /// Explicit schemes and `about:` targets pass through; a single whitespace-free
@@ -2199,6 +2370,192 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Effect::ToggleFullscreen { fullscreen: false }))
         );
+    }
+
+    // --- URL motion helpers (pure) ---
+
+    #[test]
+    fn path_up_walks_segments() {
+        assert_eq!(
+            url_path_up("https://example.com/a/b/c", 1).as_deref(),
+            Some("https://example.com/a/b")
+        );
+        assert_eq!(
+            url_path_up("https://example.com/a/b/c", 2).as_deref(),
+            Some("https://example.com/a")
+        );
+        // A trailing slash is trimmed before stepping.
+        assert_eq!(
+            url_path_up("https://example.com/a/b/", 1).as_deref(),
+            Some("https://example.com/a")
+        );
+        // Query and fragment are dropped.
+        assert_eq!(
+            url_path_up("https://example.com/a/b?q=1#x", 1).as_deref(),
+            Some("https://example.com/a")
+        );
+        // At the root, walking up stays at the host root.
+        assert_eq!(
+            url_path_up("https://example.com/", 1).as_deref(),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn host_root_strips_path_query_fragment() {
+        assert_eq!(
+            url_host_root("https://example.com/a/b/c?q=1#x").as_deref(),
+            Some("https://example.com")
+        );
+        // Already at the root: nothing to do.
+        assert_eq!(url_host_root("https://example.com"), None);
+        assert_eq!(url_host_root("https://example.com/"), None);
+    }
+
+    #[test]
+    fn step_number_increments_decrements_and_clamps() {
+        assert_eq!(
+            url_step_number("https://example.com/page/7", 1).as_deref(),
+            Some("https://example.com/page/8")
+        );
+        assert_eq!(
+            url_step_number("https://example.com/page/7", -1).as_deref(),
+            Some("https://example.com/page/6")
+        );
+        assert_eq!(
+            url_step_number("https://example.com/page/7", 5).as_deref(),
+            Some("https://example.com/page/12")
+        );
+        // Decrement clamps at zero.
+        assert_eq!(
+            url_step_number("https://example.com/page/0", -1).as_deref(),
+            Some("https://example.com/page/0")
+        );
+        // Zero padding width is preserved.
+        assert_eq!(
+            url_step_number("https://example.com/p/008", 1).as_deref(),
+            Some("https://example.com/p/009")
+        );
+        // No digits: nothing to do.
+        assert_eq!(url_step_number("https://example.com/about", 1), None);
+    }
+
+    // --- URL motion commands ---
+
+    fn state_at(url: &str) -> State {
+        let mut state = state_with_tab();
+        let id = state.tabs.active_id().unwrap();
+        state.tabs.get_mut(id).unwrap().url = url.to_string();
+        state
+    }
+
+    fn loaded_uri(effects: &[Effect]) -> Option<&str> {
+        effects.iter().find_map(|e| match e {
+            Effect::LoadUri { uri, .. } => Some(uri.as_str()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn url_up_and_root_navigate() {
+        let mut state = state_at("https://example.com/a/b/c");
+        let effects = update(&mut state, Msg::Command(Command::UrlUp(1)));
+        assert_eq!(loaded_uri(&effects), Some("https://example.com/a/b"));
+
+        let mut state = state_at("https://example.com/a/b/c?q=1#x");
+        let effects = update(&mut state, Msg::Command(Command::UrlRoot));
+        assert_eq!(loaded_uri(&effects), Some("https://example.com"));
+    }
+
+    #[test]
+    fn url_increment_honors_count_and_emits_nothing_without_a_number() {
+        let mut state = state_at("https://example.com/page/7");
+        let effects = update(&mut state, Msg::Command(Command::UrlIncrement(1)));
+        assert_eq!(loaded_uri(&effects), Some("https://example.com/page/8"));
+
+        // `5<C-a>`: count sets the step magnitude, keeping the sign.
+        let cmd = Command::UrlIncrement(1).with_count(5);
+        let effects = update(
+            &mut state_at("https://example.com/page/7"),
+            Msg::Command(cmd),
+        );
+        assert_eq!(loaded_uri(&effects), Some("https://example.com/page/12"));
+
+        let cmd = Command::UrlIncrement(-1).with_count(3);
+        let effects = update(
+            &mut state_at("https://example.com/page/7"),
+            Msg::Command(cmd),
+        );
+        assert_eq!(loaded_uri(&effects), Some("https://example.com/page/4"));
+
+        let mut state = state_at("https://example.com/about");
+        let effects = update(&mut state, Msg::Command(Command::UrlIncrement(1)));
+        assert_eq!(loaded_uri(&effects), None);
+    }
+
+    #[test]
+    fn page_next_evals_js_and_result_opens_or_blocks() {
+        let mut state = state_at("https://example.com/1");
+        let effects = update(&mut state, Msg::Command(Command::PageNext));
+        let (id, tab) = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::EvalJs {
+                    id,
+                    tab,
+                    purpose: JsPurpose::PageRelLink,
+                    ..
+                } => Some((*id, *tab)),
+                _ => None,
+            })
+            .expect("PageNext should evaluate JS for the rel link");
+        assert_eq!(state.pending_js.get(&id), Some(&JsPurpose::PageRelLink));
+
+        // A safe resolved URL opens in the current tab.
+        let effects = update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok("https://example.com/2".to_string()),
+            },
+        );
+        assert_eq!(loaded_uri(&effects), Some("https://example.com/2"));
+
+        // An unsafe scheme is blocked, not navigated.
+        let mut state = state_at("https://example.com/1");
+        let effects = update(&mut state, Msg::Command(Command::PagePrev));
+        let (id, tab) = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::EvalJs { id, tab, .. } => Some((*id, *tab)),
+                _ => None,
+            })
+            .unwrap();
+        let effects = update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok("file:///etc/passwd".to_string()),
+            },
+        );
+        assert_eq!(loaded_uri(&effects), None);
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ShowMessage {
+                level: MessageLevel::Error,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn focus_input_evals_js_and_enters_insert() {
+        let mut state = state_at("https://example.com");
+        let effects = update(&mut state, Msg::Command(Command::FocusInput(1)));
+        assert!(effects.iter().any(|e| matches!(e, Effect::EvalJs { .. })));
+        assert_eq!(state.mode.current, Mode::Insert);
     }
 
     #[test]

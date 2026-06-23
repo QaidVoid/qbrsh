@@ -82,6 +82,18 @@ pub enum Command {
     Reload { bypass_cache: bool },
     /// Stop loading the active tab.
     Stop,
+    /// Navigate up `count` segments of the active URL's path.
+    UrlUp(u32),
+    /// Navigate to the host root of the active URL.
+    UrlRoot,
+    /// Follow the page's next link (`rel=next` or a labelled fallback).
+    PageNext,
+    /// Follow the page's previous link (`rel=prev` or a labelled fallback).
+    PagePrev,
+    /// Step the last number in the active URL by a signed amount.
+    UrlIncrement(i32),
+    /// Focus the Nth (1-based) text input on the page and enter insert mode.
+    FocusInput(u32),
     /// Scroll the active page in a direction `count` steps.
     Scroll(ScrollDir, u32),
     /// Scroll by a page (or half page) up or down.
@@ -237,6 +249,16 @@ impl Command {
                 bypass_cache: rest.contains(&"--force"),
             },
             "stop" => Command::Stop,
+            "url-up" => Command::UrlUp(count(1)),
+            "url-root" => Command::UrlRoot,
+            "page-next" => Command::PageNext,
+            "page-prev" => Command::PagePrev,
+            "url-increment" => Command::UrlIncrement(
+                rest.first()
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .unwrap_or(1),
+            ),
+            "focus-input" => Command::FocusInput(count(1)),
             "scroll" => Command::Scroll(parse_dir(rest.first())?, 1),
             "scroll-page" => Command::ScrollPage {
                 down: matches!(rest.first(), Some(&"down")),
@@ -355,6 +377,10 @@ impl Command {
             Command::Forward(_) => Command::Forward(count),
             Command::TabNext(_) => Command::TabNext(count),
             Command::TabPrev(_) => Command::TabPrev(count),
+            Command::UrlUp(_) => Command::UrlUp(count),
+            Command::FocusInput(_) => Command::FocusInput(count),
+            // Keep the direction (sign), set the step magnitude from the count.
+            Command::UrlIncrement(step) => Command::UrlIncrement(step.signum() * count as i32),
             other => other,
         }
     }
@@ -466,6 +492,12 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("forward", "Go forward in history"),
     ("reload", "Reload the page"),
     ("stop", "Stop loading"),
+    ("url-up", "Go up one URL path segment"),
+    ("url-root", "Go to the host root"),
+    ("page-next", "Follow the next-page link"),
+    ("page-prev", "Follow the previous-page link"),
+    ("url-increment", "Step a number in the URL"),
+    ("focus-input", "Focus the first page input"),
     ("scroll", "Scroll in a direction"),
     ("scroll-page", "Scroll by a page"),
     ("scroll-to-perc", "Scroll to a percentage of the page"),

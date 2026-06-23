@@ -53,6 +53,15 @@ pub fn default_bindings() -> BindingTrie {
     bind("R", "reload --force");
     bind("<C-c>", "stop");
 
+    // URL and page motions
+    bind("gu", "url-up");
+    bind("gU", "url-root");
+    bind("]]", "page-next");
+    bind("[[", "page-prev");
+    bind("<C-a>", "url-increment 1");
+    bind("<C-x>", "url-increment -1");
+    bind("gi", "focus-input");
+
     // Tabs
     bind("J", "tab-next");
     bind("K", "tab-prev");
@@ -170,6 +179,28 @@ mod tests {
             trie.lookup(&parse_key_string("<F11>")),
             TrieMatch::Exact("fullscreen".to_string())
         );
+    }
+
+    #[test]
+    fn url_motion_bindings_resolve() {
+        let trie = default_bindings();
+        let exact = |k: &str, cmd: &str| {
+            assert_eq!(
+                trie.lookup(&parse_key_string(k)),
+                TrieMatch::Exact(cmd.to_string())
+            );
+        };
+        exact("gu", "url-up");
+        exact("gU", "url-root");
+        exact("]]", "page-next");
+        exact("[[", "page-prev");
+        exact("<C-a>", "url-increment 1");
+        exact("<C-x>", "url-increment -1");
+        exact("gi", "focus-input");
+        // Existing g-prefixed bindings still resolve.
+        exact("gg", "scroll-to-perc 0");
+        exact("gC", "tab-clone");
+        exact("gb", "cmd-set-text :bookmark-load ");
     }
 
     #[test]
