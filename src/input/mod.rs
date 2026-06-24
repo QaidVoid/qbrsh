@@ -53,7 +53,12 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
         // Escape leaves the current mode regardless of which mode is active,
         // except in History mode where the core handles it so Esc can leave
         // filter editing before exiting the view.
-        if key.sym == "Escape" && !key.ctrl && !key.alt && snapshot.mode != Mode::History {
+        if key.sym == "Escape"
+            && !key.ctrl
+            && !key.alt
+            && snapshot.mode != Mode::History
+            && snapshot.mode != Mode::Buffer
+        {
             mb.send(Msg::Command(Command::ModeLeave));
             return glib::Propagation::Stop;
         }
@@ -96,7 +101,8 @@ pub fn install(ui: &Ui, mailbox: &Mailbox) -> ModeMirror {
             | Mode::Prompt
             | Mode::Permissions
             | Mode::Downloads
-            | Mode::History => {
+            | Mode::History
+            | Mode::Buffer => {
                 mb.send(Msg::Key(key));
                 glib::Propagation::Stop
             }

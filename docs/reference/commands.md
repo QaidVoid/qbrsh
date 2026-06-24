@@ -39,6 +39,7 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | `tab-move <offset>` | move the current tab |
 | `tab-only` | close all other tabs |
 | `undo` | reopen the last closed tab |
+| `buffer [query]` | pick an open tab by title or URL |
 
 ## Hints and yank
 

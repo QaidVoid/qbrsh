@@ -103,6 +103,8 @@ pub enum Effect {
     RenderDownloads,
     /// Re-render the history management list from current state.
     RenderHistory,
+    /// Re-render the open-tab picker from current state.
+    RenderBuffer,
     /// Apply the current theme (colors, font) to the chrome.
     ApplyTheme,
     /// Push the current per-site permission policy to the engine.

@@ -67,6 +67,7 @@ pub fn default_bindings() -> BindingTrie {
     bind("K", "tab-prev");
     bind("d", "tab-close");
     bind("u", "undo");
+    bind("gt", "buffer");
     bind("gC", "tab-clone");
     bind("gJ", "tab-move +1");
     bind("gK", "tab-move -1");

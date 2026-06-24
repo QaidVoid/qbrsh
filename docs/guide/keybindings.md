@@ -58,6 +58,7 @@ followed. `Escape` cancels.
 | `gJ` / `gK` | move the tab right / left |
 | `co` | close all other tabs |
 | `<A-1>` .. `<A-9>` | focus tab 1 to 9 |
+| `gt` | open the tab picker (`:buffer`) |
 
 ## Yank, marks, content
 

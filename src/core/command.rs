@@ -194,6 +194,8 @@ pub enum Command {
     Downloads,
     /// Open the history management view, optionally pre-filtered.
     History(Option<String>),
+    /// Open the tab picker, optionally pre-filtered by a query.
+    Buffer(Option<String>),
     /// Split the focused pane into two stacked panes (top/bottom), opening a new
     /// tab in the new pane.
     Split,
@@ -368,6 +370,7 @@ impl Command {
             "permissions" => Command::Permissions,
             "downloads" => Command::Downloads,
             "history" => Command::History(if arg.is_empty() { None } else { Some(arg) }),
+            "buffer" => Command::Buffer(if arg.is_empty() { None } else { Some(arg) }),
             "split" | "sp" => Command::Split,
             "vsplit" | "vs" => Command::Vsplit,
             "close-pane" => Command::ClosePane,
@@ -587,6 +590,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("permissions", "Manage per-site permissions"),
     ("downloads", "Manage downloads"),
     ("history", "Browse and search history"),
+    ("buffer", "Pick an open tab by title or URL"),
     ("split", "Split the focused pane top/bottom"),
     ("vsplit", "Split the focused pane side by side"),
     ("close-pane", "Close the focused pane (keep its tab)"),

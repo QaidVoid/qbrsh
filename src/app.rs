@@ -84,6 +84,7 @@ impl GtkEffectRunner {
             Mode::Permissions => "PERMISSIONS",
             Mode::Downloads => "DOWNLOADS",
             Mode::History => "HISTORY",
+            Mode::Buffer => "BUFFER",
             Mode::Passthrough => "PASS THROUGH",
         };
         let url = state
@@ -332,6 +333,65 @@ impl GtkEffectRunner {
                 row.url,
                 row.visit_count,
                 fmt_ago(row.last_visit, now)
+            )));
+            label.set_xalign(0.0);
+            label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            label.set_max_width_chars(120);
+            self.ui.completion.append(&label);
+        }
+    }
+
+    fn render_buffer(&self, state: &State) {
+        while let Some(child) = self.ui.completion.first_child() {
+            self.ui.completion.remove(&child);
+        }
+        let show = state.mode.current == Mode::Buffer;
+        self.ui.completion.set_visible(show);
+        if !show {
+            return;
+        }
+        let filter_line = if state.buffer_view.filter.is_empty() {
+            "/ to filter".to_string()
+        } else {
+            format!("filter: {}", state.buffer_view.filter)
+        };
+        let edit_marker = if state.buffer_view.filter_edit {
+            " (editing)"
+        } else {
+            ""
+        };
+        let filter_label = gtk4::Label::new(Some(&format!("  {filter_line}{edit_marker}")));
+        filter_label.set_xalign(0.0);
+        self.ui.completion.append(&filter_label);
+
+        let matches =
+            crate::core::update::filtered_tab_indices(&state.tabs, &state.buffer_view.filter);
+        if matches.is_empty() {
+            let label = gtk4::Label::new(Some("  no tabs match"));
+            label.set_xalign(0.0);
+            self.ui.completion.append(&label);
+            return;
+        }
+        let header = gtk4::Label::new(Some("  [Enter/o] switch  j/k move  / filter  Esc close"));
+        header.set_xalign(0.0);
+        self.ui.completion.append(&header);
+        let active = state.tabs.active_id();
+        let selected = state.buffer_view.selected.min(matches.len() - 1);
+        let tabs: Vec<&crate::core::state::Tab> = state.tabs.iter().collect();
+        for (row, &idx) in matches.iter().enumerate() {
+            let Some(tab) = tabs.get(idx) else { continue };
+            let marker = if row == selected { "▸ " } else { "  " };
+            let active_marker = if active == Some(tab.id) { "* " } else { "  " };
+            let private_marker = if tab.private { "[private] " } else { "" };
+            let title = if tab.title.is_empty() {
+                tab.url.as_str()
+            } else {
+                tab.title.as_str()
+            };
+            let label = gtk4::Label::new(Some(&format!(
+                "{marker}{active_marker}{}: {private_marker}{title}  {}",
+                idx + 1,
+                tab.url
             )));
             label.set_xalign(0.0);
             label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
@@ -754,6 +814,7 @@ impl EffectRunner for GtkEffectRunner {
             Effect::RenderPermissions => self.render_permissions(state),
             Effect::RenderDownloads => self.render_downloads(state),
             Effect::RenderHistory => self.render_history(state),
+            Effect::RenderBuffer => self.render_buffer(state),
             Effect::ShowMessage { text, .. } => {
                 self.ui.statusbar.set_text(&text);
             }

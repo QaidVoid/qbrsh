@@ -15,7 +15,7 @@ use crate::core::key::{Key, display_sequence, parse_key_string};
 use crate::core::msg::{JsPurpose, LoadEvent, Msg};
 use crate::core::state::{
     Bookmark, Download as DownloadRecord, DownloadStatus, Mode, PermissionPolicy, PermissionPrompt,
-    Search, SearchEngines, SearchStatus, SplitDir, State, TABS_COLLAPSED_WIDTH, TabId,
+    Search, SearchEngines, SearchStatus, SplitDir, State, TABS_COLLAPSED_WIDTH, TabId, Tabs,
 };
 use crate::core::trie::TrieMatch;
 
@@ -30,6 +30,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             Mode::Permissions => handle_permissions_key(state, key),
             Mode::Downloads => handle_downloads_key(state, key),
             Mode::History => handle_history_key(state, key),
+            Mode::Buffer => handle_buffer_key(state, key),
             // The controller forwards keys to the page in passthrough mode, so
             // the core should never act on one even if it slips through.
             Mode::Passthrough => Vec::new(),
@@ -938,6 +939,97 @@ fn open_history_tab(state: &mut State) -> Vec<Effect> {
     effects
 }
 
+/// Indices into `tabs.iter()` order of the tabs matching `query`, as a
+/// case-insensitive substring of the title or URL. An empty query matches all.
+pub(crate) fn filtered_tab_indices(tabs: &Tabs, query: &str) -> Vec<usize> {
+    let q = query.trim().to_lowercase();
+    tabs.iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            q.is_empty() || t.title.to_lowercase().contains(&q) || t.url.to_lowercase().contains(&q)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Handle a key press in the tab picker. Mirrors `handle_history_key`: `j`/`k`
+/// move over the filtered list and wrap, `Enter`/`o` switch, `/` edits the
+/// filter, and `Esc`/`q` leaves.
+fn handle_buffer_key(state: &mut State, key: Key) -> Vec<Effect> {
+    if state.buffer_view.filter_edit {
+        return handle_buffer_filter_key(state, key);
+    }
+    let len = filtered_tab_indices(&state.tabs, &state.buffer_view.filter).len();
+    match key.sym.as_str() {
+        "j" | "Down" if len > 0 => {
+            state.buffer_view.selected = (state.buffer_view.selected + 1) % len;
+            vec![Effect::RenderBuffer]
+        }
+        "k" | "Up" if len > 0 => {
+            state.buffer_view.selected = (state.buffer_view.selected + len - 1) % len;
+            vec![Effect::RenderBuffer]
+        }
+        "Return" | "o" if len > 0 => switch_to_buffer_selection(state),
+        "/" => {
+            state.buffer_view.filter_edit = true;
+            vec![Effect::RenderBuffer, Effect::RenderStatus]
+        }
+        "Escape" | "q" => {
+            state.mode.leave();
+            vec![Effect::RenderBuffer, Effect::RenderStatus]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Handle a key while editing the picker filter. Mirrors the history filter
+/// editor; the selection resets as the filter changes.
+fn handle_buffer_filter_key(state: &mut State, key: Key) -> Vec<Effect> {
+    match key.sym.as_str() {
+        "Escape" | "Return" => {
+            state.buffer_view.filter_edit = false;
+            state.buffer_view.selected = 0;
+            vec![Effect::RenderBuffer, Effect::RenderStatus]
+        }
+        "BackSpace" => {
+            state.buffer_view.filter.pop();
+            state.buffer_view.selected = 0;
+            vec![Effect::RenderBuffer]
+        }
+        "space" if !key.ctrl && !key.alt => {
+            state.buffer_view.filter.push(' ');
+            state.buffer_view.selected = 0;
+            vec![Effect::RenderBuffer]
+        }
+        _ if !key.ctrl
+            && !key.alt
+            && key.sym.chars().count() == 1
+            && key.sym.chars().next().is_some_and(|c| !c.is_control()) =>
+        {
+            let c = key.sym.chars().next().unwrap();
+            state.buffer_view.filter.push(c);
+            state.buffer_view.selected = 0;
+            vec![Effect::RenderBuffer]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Switch to the selected picker row by its `TabId` and leave the view.
+fn switch_to_buffer_selection(state: &mut State) -> Vec<Effect> {
+    let matches = filtered_tab_indices(&state.tabs, &state.buffer_view.filter);
+    let Some(&idx) = matches.get(state.buffer_view.selected) else {
+        return Vec::new();
+    };
+    let Some(id) = state.tabs.iter().nth(idx).map(|t| t.id) else {
+        return Vec::new();
+    };
+    state.mode.leave();
+    let mut effects = vec![Effect::RenderBuffer, Effect::RenderStatus];
+    effects.extend(focus_tab(state, id));
+    effects
+}
+
 /// Delete the selected history entry locally and from the store.
 fn delete_history_selected(state: &mut State) -> Vec<Effect> {
     let Some(row) = state
@@ -1374,6 +1466,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.mode.leave();
             vec![Effect::RenderHistory, Effect::RenderStatus]
         }
+        Command::ModeLeave if state.mode.current == Mode::Buffer => {
+            state.mode.leave();
+            vec![Effect::RenderBuffer, Effect::RenderStatus]
+        }
         Command::ModeLeave => {
             let was_hint = state.mode.current == Mode::Hint;
             state.mode.leave();
@@ -1683,6 +1779,14 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             effects.push(Effect::RenderHistory);
             effects.push(Effect::RenderStatus);
             effects
+        }
+
+        Command::Buffer(arg) => {
+            state.buffer_view.filter = arg.unwrap_or_default();
+            state.buffer_view.filter_edit = false;
+            state.buffer_view.selected = 0;
+            state.mode.enter(Mode::Buffer);
+            vec![Effect::RenderBuffer, Effect::RenderStatus]
         }
 
         Command::Split | Command::Vsplit => {
@@ -3010,6 +3114,67 @@ mod tests {
             update(&mut state, Msg::Command(Command::Inspect)),
             vec![Effect::ToggleInspector { tab }]
         );
+    }
+
+    // --- Tab picker ---
+
+    fn state_with_three_tabs() -> State {
+        let mut state = state_with_tab(); // tab 0: https://example.com
+        let id1 = state.tabs.open("https://docs.rs/foo");
+        let id2 = state.tabs.open("https://github.com/bar");
+        state.tabs.get_mut(id1).unwrap().title = "Foo Docs".to_string();
+        state.tabs.get_mut(id2).unwrap().title = "GitHub Bar".to_string();
+        state
+    }
+
+    #[test]
+    fn buffer_command_enters_mode_and_seeds_filter() {
+        let mut state = state_with_three_tabs();
+        update(&mut state, Msg::Command(Command::Buffer(None)));
+        assert_eq!(state.mode.current, Mode::Buffer);
+        assert_eq!(state.buffer_view.filter, "");
+
+        let mut state = state_with_three_tabs();
+        update(
+            &mut state,
+            Msg::Command(Command::Buffer(Some("docs".to_string()))),
+        );
+        assert_eq!(state.mode.current, Mode::Buffer);
+        assert_eq!(state.buffer_view.filter, "docs");
+    }
+
+    #[test]
+    fn buffer_filter_matches_title_and_url_case_insensitively() {
+        let state = state_with_three_tabs();
+        // Empty query lists every tab.
+        assert_eq!(filtered_tab_indices(&state.tabs, "").len(), 3);
+        // Title match, ignoring case.
+        assert_eq!(filtered_tab_indices(&state.tabs, "GITHUB").len(), 1);
+        // URL match.
+        assert_eq!(filtered_tab_indices(&state.tabs, "docs.rs").len(), 1);
+        // No match.
+        assert_eq!(filtered_tab_indices(&state.tabs, "zzz").len(), 0);
+    }
+
+    #[test]
+    fn buffer_enter_switches_by_id_and_esc_leaves_unchanged() {
+        let mut state = state_with_three_tabs();
+        let ids: Vec<_> = state.tabs.iter().map(|t| t.id).collect();
+        update(&mut state, Msg::Command(Command::Buffer(None)));
+        // Move to the second row and switch.
+        update(&mut state, Msg::Key(Key::plain("j")));
+        update(&mut state, Msg::Key(Key::plain("Return")));
+        assert_eq!(state.mode.current, Mode::Normal);
+        assert_eq!(state.tabs.active_id(), Some(ids[1]));
+
+        // Esc leaves without changing the active tab.
+        let mut state = state_with_three_tabs();
+        let before = state.tabs.active_id();
+        update(&mut state, Msg::Command(Command::Buffer(None)));
+        update(&mut state, Msg::Key(Key::plain("j")));
+        update(&mut state, Msg::Key(Key::plain("Escape")));
+        assert_eq!(state.mode.current, Mode::Normal);
+        assert_eq!(state.tabs.active_id(), before);
     }
 
     // --- Clipboard open ---

@@ -31,6 +31,8 @@ pub enum Mode {
     Downloads,
     /// Browsing the history management list.
     History,
+    /// Browsing the open-tab picker.
+    Buffer,
     /// Every key is forwarded to the page until the user leaves with Escape.
     Passthrough,
 }
@@ -1076,6 +1078,15 @@ pub struct HistoryViewState {
     pub generation: u64,
 }
 
+/// State of the open-tab picker (`:buffer`). Unlike history, the rows are derived
+/// on demand from `State.tabs`, so only the filter and selection are held here.
+#[derive(Debug, Default)]
+pub struct BufferViewState {
+    pub selected: usize,
+    pub filter: String,
+    pub filter_edit: bool,
+}
+
 /// User configuration, deserialized from TOML and adjustable at runtime.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
@@ -1223,6 +1234,8 @@ pub struct State {
     pub dl_view: DownloadViewState,
     /// State of the history management list view.
     pub history_view: HistoryViewState,
+    /// State of the open-tab picker view.
+    pub buffer_view: BufferViewState,
     /// The pane layout. Empty until initialized in startup (`Layout::new`).
     pub layout: Layout,
     /// The last in-page search, for `n`/`N` repeat.

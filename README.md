@@ -83,7 +83,7 @@ is active. Press `Esc` to return to Normal mode.
 `:view-source`, `:print`, `:save`, `:inspect`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
 `:tabs-toggle`, `:fullscreen`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
-`:permissions`, `:downloads`, `:history`, `:split`, `:vsplit`, `:close-pane`,
+`:permissions`, `:downloads`, `:history`, `:buffer`, `:split`, `:vsplit`, `:close-pane`,
 `:only-pane`, `:focus-pane`, `:focus-pane-prev`, `:quit`.
 
 Browsing is configurable: named search engines with bang prefixes
@@ -143,6 +143,12 @@ visit count, and time. `j`/`k` move the selection, `Enter` or `o` opens the
 entry in the current tab, `t` opens it in a new tab, and `x` deletes it. Press
 `/` to filter by URL or title (type to refine, `Backspace` edits, `Enter` or
 `Esc` returns to the list); a second `Esc` or `q` leaves the view.
+
+`:buffer [query]` (bound to `gt`) opens a tab picker listing every open tab with
+its index, title, and URL, marking the active tab and any private tab. A query
+filters the list by a case-insensitive substring of the title or URL. `j`/`k`
+move the selection, `Enter` or `o` switches to the selected tab, `/` edits the
+filter, and `Esc` or `q` leaves without switching.
 
 ## Configuration
 
