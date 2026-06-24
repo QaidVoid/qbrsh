@@ -1,4 +1,14 @@
 
+## 0.4.0 — 2026-06-24
+
+### Features
+
+- Paste-open clipboard/selection (pp/pt/PP/PT)
+- Remember scroll position across back/forward
+- Passthrough mode (C-z forwards keys to page)
+- Url and page motions (gu/gU, ]]/[[, C-a/C-x, gi)
+- Stop binding and window fullscreen toggle
+
 ## 0.3.0 — 2026-06-22
 
 ### Bug Fixes
