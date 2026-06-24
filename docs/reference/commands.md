@@ -46,6 +46,7 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | --- | --- |
 | `hint` / `hint-tab` | follow a link, or open it in a new tab |
 | `yank [url\|title]` | copy the URL or title |
+| `clipboard-open [clipboard\|primary] [current\|tab]` | open clipboard or selection text |
 
 ## Marks and sessions
 

@@ -4,7 +4,7 @@
 //! [`Msg`]. Messages are the only thing the dispatch loop consumes, and
 //! [`crate::core::update::update`] is the only thing that interprets them.
 
-use crate::core::command::Command;
+use crate::core::command::{ClipboardSource, Command, OpenTarget};
 use crate::core::key::Key;
 use crate::core::state::{Capability, Config, HistoryRow, TabId};
 
@@ -133,4 +133,11 @@ pub enum Msg {
     DownloadFailed { id: u64, error: String },
     /// A download was cancelled by the user.
     DownloadCancelled { id: u64 },
+    /// Text read from a clipboard source, with the source and the placement
+    /// that requested it; an empty string means the read was empty or failed.
+    ClipboardRead {
+        text: String,
+        source: ClipboardSource,
+        target: OpenTarget,
+    },
 }

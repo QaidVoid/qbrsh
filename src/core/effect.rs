@@ -5,7 +5,7 @@
 //! executes afterwards. Because effects are plain data, `update` can be unit-tested
 //! by asserting on the returned effects without any GTK or engine present.
 
-use crate::core::command::ClearScope;
+use crate::core::command::{ClearScope, ClipboardSource, OpenTarget};
 use crate::core::msg::{JsPurpose, RequestId};
 use crate::core::state::{PaneId, Permissions, SitePreferences, TabId};
 use std::path::PathBuf;
@@ -57,6 +57,12 @@ pub enum Effect {
     RenderLayout,
     /// Write text to the system clipboard.
     SetClipboard(String),
+    /// Read `source` asynchronously; the text returns as `Msg::ClipboardRead`
+    /// carrying `target` so the result knows where to open.
+    ReadClipboard {
+        source: ClipboardSource,
+        target: OpenTarget,
+    },
     /// Persist the quickmarks (name, url) to disk.
     SaveQuickmarks(Vec<(String, String)>),
     /// Persist the bookmarks (url, title) to disk.

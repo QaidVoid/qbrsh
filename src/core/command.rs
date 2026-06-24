@@ -33,6 +33,15 @@ pub enum YankWhat {
     Title,
 }
 
+/// Which system text source a paste-open reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardSource {
+    /// The normal clipboard (the destination of `yank`).
+    Clipboard,
+    /// The primary selection (highlighted text, middle-click paste).
+    Primary,
+}
+
 /// How a JavaScript site-preference command changes the current site's rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsToggle {
@@ -128,6 +137,11 @@ pub enum Command {
     Accept,
     /// Copy a property of the active tab to the clipboard.
     Yank(YankWhat),
+    /// Open the clipboard or primary selection text as a navigation target.
+    ClipboardOpen {
+        source: ClipboardSource,
+        target: OpenTarget,
+    },
     /// Save the active page as a named quickmark.
     QuickmarkSave(String),
     /// Open the quickmark with the given name.
@@ -292,6 +306,21 @@ impl Command {
                 Some(&"title") => YankWhat::Title,
                 Some(other) => return Err(format!("unknown yank target: {other}")),
             }),
+            "clipboard-open" => {
+                let source = match rest.first() {
+                    None | Some(&"clipboard") => ClipboardSource::Clipboard,
+                    Some(&"primary") => ClipboardSource::Primary,
+                    Some(other) => {
+                        return Err(format!("unknown clipboard source: {other}"));
+                    }
+                };
+                let target = match rest.get(1) {
+                    None | Some(&"current") => OpenTarget::Current,
+                    Some(&"tab") => OpenTarget::Tab,
+                    Some(other) => return Err(format!("unknown open target: {other}")),
+                };
+                Command::ClipboardOpen { source, target }
+            }
             "quickmark-save" => Command::QuickmarkSave(arg),
             "quickmark-load" => Command::QuickmarkLoad(arg),
             "quickmark-del" => Command::QuickmarkDel(arg),
@@ -514,6 +543,7 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("mode-enter", "Enter an input mode"),
     ("mode-leave", "Return to normal mode"),
     ("yank", "Copy the page URL or title"),
+    ("clipboard-open", "Open clipboard or selection text"),
     ("quickmark-save", "Save the page as a named quickmark"),
     ("quickmark-load", "Open a quickmark by name"),
     ("quickmark-del", "Delete a quickmark"),

@@ -63,6 +63,8 @@ followed. `Escape` cancels.
 | Key | Action |
 | --- | --- |
 | `yy` / `yt` | yank the URL / the title |
+| `pp` / `pt` | open the primary selection in this / a new tab |
+| `PP` / `PT` | open the clipboard contents in this / a new tab |
 | `M` | bookmark the page |
 | `m` / `b` | save / load a quickmark |
 | `gb` | load a bookmark |

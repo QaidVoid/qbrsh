@@ -7,7 +7,7 @@
 
 use crate::core::bindings::build_bindings;
 use crate::core::command::{
-    ClearScope, Command, HintTarget, JsToggle, OpenTarget, ScrollDir, YankWhat,
+    ClearScope, ClipboardSource, Command, HintTarget, JsToggle, OpenTarget, ScrollDir, YankWhat,
 };
 use crate::core::completion::{CompletionItem, complete};
 use crate::core::effect::{Effect, MessageLevel};
@@ -474,6 +474,33 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                 .map(|dl| format!("cancelled {}", dl.filename))
                 .unwrap_or_default();
             download_message(state, text, MessageLevel::Info)
+        }
+
+        Msg::ClipboardRead {
+            text,
+            source,
+            target,
+        } => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                let what = match source {
+                    ClipboardSource::Clipboard => "clipboard",
+                    ClipboardSource::Primary => "selection",
+                };
+                return vec![Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: format!("{what} is empty"),
+                }];
+            }
+            // Reuse the normalize-and-open path so a URL loads and other text
+            // searches, exactly as a typed `:open`/`:tabopen` does.
+            handle_command(
+                state,
+                Command::Open {
+                    target,
+                    input: trimmed.to_string(),
+                },
+            )
         }
 
         Msg::Crashed { tab } => {
@@ -1362,6 +1389,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             ]
         }
 
+        Command::ClipboardOpen { source, target } => {
+            vec![Effect::ReadClipboard { source, target }]
+        }
+
         Command::QuickmarkSave(name) => {
             let name = name.trim().to_string();
             if name.is_empty() {
@@ -2230,7 +2261,7 @@ fn push_parsed(state: &mut State, command: &str, effects: &mut Vec<Effect>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::command::{Command, HintTarget, OpenTarget, ScrollDir};
+    use crate::core::command::{ClipboardSource, Command, HintTarget, OpenTarget, ScrollDir};
     use crate::core::key::Key;
     use crate::core::msg::{JsPurpose, LoadEvent, RequestId};
     use crate::core::state::{Config, Layout, Mode, State};
@@ -2808,6 +2839,88 @@ mod tests {
             _ => None,
         });
         assert_eq!(scroll, Some(Some((0, 720))));
+    }
+
+    // --- Clipboard open ---
+
+    #[test]
+    fn clipboard_open_emits_read_for_each_source_and_placement() {
+        let cases = [
+            (ClipboardSource::Primary, OpenTarget::Current),
+            (ClipboardSource::Primary, OpenTarget::Tab),
+            (ClipboardSource::Clipboard, OpenTarget::Current),
+            (ClipboardSource::Clipboard, OpenTarget::Tab),
+        ];
+        for (source, target) in cases {
+            let mut state = state_with_tab();
+            let effects =
+                update(&mut state, Msg::Command(Command::ClipboardOpen { source, target }));
+            assert_eq!(
+                effects,
+                vec![Effect::ReadClipboard { source, target }],
+                "{source:?}/{target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_read_opens_url_and_search_in_both_placements() {
+        // A URL in the current tab loads.
+        let mut state = state_at("https://example.com");
+        let tab = state.tabs.active_id().unwrap();
+        let effects = update(
+            &mut state,
+            Msg::ClipboardRead {
+                text: "  example.org  ".to_string(),
+                source: ClipboardSource::Primary,
+                target: OpenTarget::Current,
+            },
+        );
+        assert!(effects.contains(&Effect::LoadUri {
+            tab,
+            uri: "https://example.org".to_string()
+        }));
+
+        // Non-URL text in a new tab becomes a search and opens a tab.
+        let mut state = state_with_tab();
+        let before = state.tabs.iter().count();
+        let effects = update(
+            &mut state,
+            Msg::ClipboardRead {
+                text: "rust lifetimes".to_string(),
+                source: ClipboardSource::Clipboard,
+                target: OpenTarget::Tab,
+            },
+        );
+        assert_eq!(state.tabs.iter().count(), before + 1);
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::OpenTab { uri, .. } if uri.contains("duckduckgo.com") && uri.contains("rust")
+        )));
+    }
+
+    #[test]
+    fn clipboard_read_empty_shows_notice_and_opens_nothing() {
+        let mut state = state_with_tab();
+        let effects = update(
+            &mut state,
+            Msg::ClipboardRead {
+                text: "   ".to_string(),
+                source: ClipboardSource::Clipboard,
+                target: OpenTarget::Current,
+            },
+        );
+        assert!(!effects.iter().any(|e| matches!(
+            e,
+            Effect::LoadUri { .. } | Effect::OpenTab { .. }
+        )));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ShowMessage {
+                level: MessageLevel::Info,
+                ..
+            }
+        )));
     }
 
     #[test]

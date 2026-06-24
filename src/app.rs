@@ -12,7 +12,7 @@ use gtk4::Application;
 use gtk4::prelude::*;
 
 use crate::config;
-use crate::core::command::Command;
+use crate::core::command::{ClipboardSource, Command};
 use crate::core::effect::Effect;
 use crate::core::msg::Msg;
 use crate::core::runtime::{EffectRunner, Mailbox, dispatch};
@@ -590,6 +590,21 @@ impl EffectRunner for GtkEffectRunner {
             Effect::RenderLayout => self.render_layout(state),
             Effect::SetClipboard(text) => {
                 self.ui.window.clipboard().set_text(&text);
+            }
+            Effect::ReadClipboard { source, target } => {
+                let clipboard = match source {
+                    ClipboardSource::Clipboard => self.ui.window.clipboard(),
+                    ClipboardSource::Primary => self.ui.window.primary_clipboard(),
+                };
+                let mb = mailbox.clone();
+                clipboard.read_text_async(gtk4::gio::Cancellable::NONE, move |res| {
+                    let text = res.ok().flatten().map(|s| s.to_string()).unwrap_or_default();
+                    mb.send(Msg::ClipboardRead {
+                        text,
+                        source,
+                        target,
+                    });
+                });
             }
             Effect::SaveQuickmarks(entries) => {
                 marks::save_quickmarks(&self.quickmarks_path, &entries);

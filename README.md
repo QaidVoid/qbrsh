@@ -54,6 +54,7 @@ cargo run
 | `<C-w>w` / `W` | next / prev pane | `<C-c>` / `<F11>` | stop load / fullscreen |
 | `gu` / `gU` | up path / host root | `]]` / `[[` | next / prev page |
 | `<C-a>` / `<C-x>` | URL number + / - | `gi` | focus first input |
+| `pp` / `pt` | open selection here / new tab | `PP` / `PT` | open clipboard here / new tab |
 | `<C-z>` | passthrough mode | | |
 
 Counts work (e.g. `5j`). Type `/text` on the command line to search the page,
@@ -77,7 +78,7 @@ is active. Press `Esc` to return to Normal mode.
 
 `:open`, `:tabopen`, `:private`, `:back`, `:forward`, `:reload`, `:url-up`, `:url-root`,
 `:page-next`, `:page-prev`, `:url-increment`, `:focus-input`, `:tab-close/next/prev/focus`,
-`:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:quickmark-save/load/del`,
+`:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:clipboard-open`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
 `:tabs-toggle`, `:fullscreen`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,

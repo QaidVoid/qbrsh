@@ -89,6 +89,12 @@ pub fn default_bindings() -> BindingTrie {
     bind("yy", "yank");
     bind("yt", "yank title");
 
+    // Paste-open: primary selection (pp/pt) and clipboard (PP/PT)
+    bind("pp", "clipboard-open primary current");
+    bind("pt", "clipboard-open primary tab");
+    bind("PP", "clipboard-open clipboard current");
+    bind("PT", "clipboard-open clipboard tab");
+
     // Bookmarks and quickmarks
     bind("M", "bookmark-add");
     bind("m", "cmd-set-text :quickmark-save ");
