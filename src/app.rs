@@ -497,6 +497,11 @@ impl EffectRunner for GtkEffectRunner {
                     v.load_uri(&uri);
                 }
             }
+            Effect::LoadHtml { tab, html } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.load_html(&html);
+                }
+            }
             Effect::Reload { tab, bypass_cache } => {
                 if let Some(v) = self.views.get(&tab) {
                     v.reload(bypass_cache);
@@ -505,6 +510,23 @@ impl EffectRunner for GtkEffectRunner {
             Effect::Stop { tab } => {
                 if let Some(v) = self.views.get(&tab) {
                     v.stop();
+                }
+            }
+            Effect::Print { tab } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.print();
+                }
+            }
+            Effect::SavePage { tab } => {
+                if let Some(v) = self.views.get(&tab) {
+                    self.ui.statusbar.set_text("saving page...");
+                    let mb = mailbox.clone();
+                    v.save_mhtml(Box::new(move |res| mb.send(Msg::PageSaved(res))));
+                }
+            }
+            Effect::ToggleInspector { tab } => {
+                if let Some(v) = self.views.get(&tab) {
+                    v.toggle_inspector();
                 }
             }
             Effect::GoBack { tab } => {
@@ -598,7 +620,11 @@ impl EffectRunner for GtkEffectRunner {
                 };
                 let mb = mailbox.clone();
                 clipboard.read_text_async(gtk4::gio::Cancellable::NONE, move |res| {
-                    let text = res.ok().flatten().map(|s| s.to_string()).unwrap_or_default();
+                    let text = res
+                        .ok()
+                        .flatten()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
                     mb.send(Msg::ClipboardRead {
                         text,
                         source,

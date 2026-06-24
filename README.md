@@ -55,7 +55,7 @@ cargo run
 | `gu` / `gU` | up path / host root | `]]` / `[[` | next / prev page |
 | `<C-a>` / `<C-x>` | URL number + / - | `gi` | focus first input |
 | `pp` / `pt` | open selection here / new tab | `PP` / `PT` | open clipboard here / new tab |
-| `<C-z>` | passthrough mode | | |
+| `<C-z>` | passthrough mode | `<F12>` | toggle web inspector |
 
 Counts work (e.g. `5j`). Type `/text` on the command line to search the page,
 then `n` to step forward through matches (wrapping at the end). `N` steps
@@ -80,6 +80,7 @@ is active. Press `Esc` to return to Normal mode.
 `:page-next`, `:page-prev`, `:url-increment`, `:focus-input`, `:tab-close/next/prev/focus`,
 `:tab-clone/move/only`, `:undo`, `:hint`, `:yank`, `:clipboard-open`, `:quickmark-save/load/del`,
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
+`:view-source`, `:print`, `:save`, `:inspect`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
 `:tabs-toggle`, `:fullscreen`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
 `:permissions`, `:downloads`, `:history`, `:split`, `:vsplit`, `:close-pane`,

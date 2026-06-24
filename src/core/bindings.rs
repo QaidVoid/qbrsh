@@ -130,6 +130,7 @@ pub fn default_bindings() -> BindingTrie {
 
     // Window
     bind("<F11>", "fullscreen");
+    bind("<F12>", "inspect");
 
     // Mode switching
     bind("i", "mode-enter insert");

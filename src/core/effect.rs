@@ -25,10 +25,18 @@ pub enum MessageLevel {
 pub enum Effect {
     /// Load a URI in the given tab.
     LoadUri { tab: TabId, uri: String },
+    /// Render a generated HTML document in the given tab (used for view-source).
+    LoadHtml { tab: TabId, html: String },
     /// Reload the given tab.
     Reload { tab: TabId, bypass_cache: bool },
     /// Stop loading the given tab.
     Stop { tab: TabId },
+    /// Open the system print dialog for the given tab's page.
+    Print { tab: TabId },
+    /// Save the given tab's page as a web archive (MHTML) to the downloads dir.
+    SavePage { tab: TabId },
+    /// Toggle the Web Inspector for the given tab's view.
+    ToggleInspector { tab: TabId },
     /// Navigate the given tab back.
     GoBack { tab: TabId },
     /// Navigate the given tab forward.

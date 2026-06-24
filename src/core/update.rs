@@ -233,6 +233,23 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                     }
                     Vec::new()
                 }
+                JsPurpose::ViewSource { new_tab } => {
+                    let Ok(html) = result else {
+                        return Vec::new();
+                    };
+                    if html.is_empty() {
+                        return Vec::new();
+                    }
+                    if new_tab {
+                        let mut effects = open_tab(state, "about:blank".to_string(), false, false);
+                        if let Some(new_id) = state.tabs.active_id() {
+                            effects.push(Effect::LoadHtml { tab: new_id, html });
+                        }
+                        effects
+                    } else {
+                        vec![Effect::LoadHtml { tab, html }]
+                    }
+                }
             }
         }
 
@@ -502,6 +519,24 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                 },
             )
         }
+
+        Msg::PageSaved(result) => match result {
+            Ok(path) => {
+                let name = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&path)
+                    .to_string();
+                vec![Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: format!("saved page: {name}"),
+                }]
+            }
+            Err(e) => vec![Effect::ShowMessage {
+                level: MessageLevel::Error,
+                text: format!("save failed: {e}"),
+            }],
+        },
 
         Msg::Crashed { tab } => {
             let mut effects = Vec::new();
@@ -1180,6 +1215,38 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             effects.push(Effect::RenderStatus);
             effects
         }
+        Command::ViewSource { tab: new_tab } => {
+            let Some(tab) = state.tabs.active_id() else {
+                return Vec::new();
+            };
+            let url = state
+                .tabs
+                .active()
+                .map(|t| t.url.clone())
+                .unwrap_or_default();
+            if url.is_empty() || url == "about:blank" {
+                return vec![Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: "no page source to view".to_string(),
+                }];
+            }
+            // Read the page HTML in the view; the script returns a ready-to-render
+            // escaped document. `view-source:` is not a loadable scheme here, so
+            // the source is shown via a generated page instead.
+            let id = state.alloc_request_id();
+            state
+                .pending_js
+                .insert(id, JsPurpose::ViewSource { new_tab });
+            vec![Effect::EvalJs {
+                id,
+                tab,
+                script: VIEW_SOURCE_SCRIPT.to_string(),
+                purpose: JsPurpose::ViewSource { new_tab },
+            }]
+        }
+        Command::Print => with_active(state, |tab| vec![Effect::Print { tab }]),
+        Command::SavePage => with_active(state, |tab| vec![Effect::SavePage { tab }]),
+        Command::Inspect => with_active(state, |tab| vec![Effect::ToggleInspector { tab }]),
 
         Command::Scroll(dir, count) => scroll(state, scroll_script(dir, count.max(1))),
         Command::ScrollPage { down, half } => {
@@ -1996,6 +2063,17 @@ const SCROLL_PERCENT_SCRIPT: &str = "(function(){var e=document.documentElement;
 /// Reads the page's current scroll offset as the space-joined `scrollX scrollY`.
 const READ_SCROLL_OFFSET_SCRIPT: &str =
     "(function(){return Math.round(window.scrollX)+' '+Math.round(window.scrollY);})()";
+
+/// Serializes the page's HTML and returns a ready-to-render document showing it
+/// as escaped, wrapped source text. The `view-source:` scheme is not loadable in
+/// this engine, so the source is shown via a generated page.
+const VIEW_SOURCE_SCRIPT: &str = r#"(function(){
+  var src='<!DOCTYPE '+(document.doctype?document.doctype.name:'html')+'>\n'+document.documentElement.outerHTML;
+  var esc=src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return '<!doctype html><html><head><meta charset="utf-8"><title>Source</title></head>'+
+    '<body style="margin:0"><pre style="white-space:pre-wrap;word-break:break-word;padding:1rem;font-family:monospace;font-size:13px">'+
+    esc+'</pre></body></html>';
+})()"#;
 
 /// Capture the active tab's current scroll offset, keyed by its current URL, so
 /// returning to that page can restore it. Emits a read-offset evaluation.
@@ -2841,6 +2919,99 @@ mod tests {
         assert_eq!(scroll, Some(Some((0, 720))));
     }
 
+    // --- Page tools ---
+
+    #[test]
+    fn view_source_reads_page_then_renders_html() {
+        // The command emits a JS read tagged ViewSource for the active tab.
+        let mut state = state_at("https://example.com");
+        let tab = state.tabs.active_id().unwrap();
+        let effects = update(&mut state, Msg::Command(Command::ViewSource { tab: false }));
+        let id = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::EvalJs {
+                    id,
+                    purpose: JsPurpose::ViewSource { new_tab: false },
+                    ..
+                } => Some(*id),
+                _ => None,
+            })
+            .expect("view-source emits a ViewSource read");
+
+        // The returned document is rendered in the active tab via LoadHtml.
+        let effects = update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok("<html>source</html>".to_string()),
+            },
+        );
+        assert!(effects.contains(&Effect::LoadHtml {
+            tab,
+            html: "<html>source</html>".to_string()
+        }));
+    }
+
+    #[test]
+    fn view_source_tab_opens_new_tab_then_renders() {
+        let mut state = state_at("https://example.com");
+        let tab = state.tabs.active_id().unwrap();
+        let before = state.tabs.iter().count();
+        let effects = update(&mut state, Msg::Command(Command::ViewSource { tab: true }));
+        let id = pending_id(&state, JsPurpose::ViewSource { new_tab: true });
+        assert!(effects.iter().any(|e| matches!(e, Effect::EvalJs { .. })));
+
+        let effects = update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok("<html>src</html>".to_string()),
+            },
+        );
+        assert_eq!(state.tabs.iter().count(), before + 1);
+        let new_id = state.tabs.active_id().unwrap();
+        assert_ne!(new_id, tab);
+        assert!(effects.contains(&Effect::LoadHtml {
+            tab: new_id,
+            html: "<html>src</html>".to_string()
+        }));
+    }
+
+    #[test]
+    fn view_source_with_no_page_is_a_notice() {
+        let mut state = state_at("about:blank");
+        let effects = update(&mut state, Msg::Command(Command::ViewSource { tab: false }));
+        assert!(!effects.iter().any(|e| matches!(e, Effect::EvalJs { .. })));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ShowMessage {
+                level: MessageLevel::Info,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn print_save_inspect_target_the_active_tab() {
+        let mut state = state_with_tab();
+        let tab = state.tabs.active_id().unwrap();
+        assert_eq!(
+            update(&mut state, Msg::Command(Command::Print)),
+            vec![Effect::Print { tab }]
+        );
+        assert_eq!(
+            update(&mut state, Msg::Command(Command::SavePage)),
+            vec![Effect::SavePage { tab }]
+        );
+        assert_eq!(
+            update(&mut state, Msg::Command(Command::Inspect)),
+            vec![Effect::ToggleInspector { tab }]
+        );
+    }
+
     // --- Clipboard open ---
 
     #[test]
@@ -2853,8 +3024,10 @@ mod tests {
         ];
         for (source, target) in cases {
             let mut state = state_with_tab();
-            let effects =
-                update(&mut state, Msg::Command(Command::ClipboardOpen { source, target }));
+            let effects = update(
+                &mut state,
+                Msg::Command(Command::ClipboardOpen { source, target }),
+            );
             assert_eq!(
                 effects,
                 vec![Effect::ReadClipboard { source, target }],
@@ -2910,10 +3083,11 @@ mod tests {
                 target: OpenTarget::Current,
             },
         );
-        assert!(!effects.iter().any(|e| matches!(
-            e,
-            Effect::LoadUri { .. } | Effect::OpenTab { .. }
-        )));
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::LoadUri { .. } | Effect::OpenTab { .. }))
+        );
         assert!(effects.iter().any(|e| matches!(
             e,
             Effect::ShowMessage {

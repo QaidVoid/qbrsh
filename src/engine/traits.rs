@@ -9,6 +9,10 @@ pub trait EngineView {
     /// Load a URI.
     fn load_uri(&self, uri: &str);
 
+    /// Render a generated HTML document directly in the view (used for
+    /// view-source, where the source is shown as a generated page).
+    fn load_html(&self, html: &str);
+
     /// Reload, optionally bypassing the cache.
     fn reload(&self, bypass_cache: bool);
 
@@ -43,6 +47,18 @@ pub trait EngineView {
 
     /// Clear the current search highlight.
     fn find_clear(&self);
+
+    /// Open the system print dialog for this page.
+    fn print(&self);
+
+    /// Save this page to the downloads directory as a web archive (MHTML). The
+    /// write runs asynchronously; on completion `on_done` receives the saved
+    /// path on success or an error message on failure.
+    fn save_mhtml(&self, on_done: Box<dyn FnOnce(Result<String, String>)>);
+
+    /// Toggle the Web Inspector for this view: show it when hidden, close it
+    /// when shown.
+    fn toggle_inspector(&self);
 
     /// The widget to embed in the window's view stack.
     fn widget(&self) -> gtk4::Widget;

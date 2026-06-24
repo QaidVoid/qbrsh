@@ -41,6 +41,9 @@ pub enum JsPurpose {
     HintHref,
     /// Result is the resolved next/previous page URL, to open in the current tab.
     PageRelLink,
+    /// Result is a ready-to-render HTML document of the page source, to show in
+    /// the current tab or a new tab.
+    ViewSource { new_tab: bool },
 }
 
 /// A single unit of change entering the core.
@@ -133,6 +136,8 @@ pub enum Msg {
     DownloadFailed { id: u64, error: String },
     /// A download was cancelled by the user.
     DownloadCancelled { id: u64 },
+    /// A `:save` finished: `Ok` carries the saved path, `Err` the failure.
+    PageSaved(Result<String, String>),
     /// Text read from a clipboard source, with the source and the placement
     /// that requested it; an empty string means the read was empty or failed.
     ClipboardRead {

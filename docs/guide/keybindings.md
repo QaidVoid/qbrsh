@@ -23,6 +23,7 @@ Counts work where they make sense, for example `5j` scrolls down five steps.
 | `r` / `R` | reload / reload bypassing cache |
 | `<C-c>` | stop loading the current page |
 | `<F11>` | toggle window fullscreen |
+| `<F12>` | toggle the web inspector |
 | `gu` / `gU` | go up one path segment / to the host root |
 | `]]` / `[[` | follow the next / previous page link |
 | `<C-a>` / `<C-x>` | increment / decrement a number in the URL |

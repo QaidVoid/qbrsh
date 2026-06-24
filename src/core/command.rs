@@ -103,6 +103,14 @@ pub enum Command {
     UrlIncrement(i32),
     /// Focus the Nth (1-based) text input on the page and enter insert mode.
     FocusInput(u32),
+    /// Show the active page's HTML source, in a new tab when `tab` is set.
+    ViewSource { tab: bool },
+    /// Open the system print dialog for the active page.
+    Print,
+    /// Save the active page to the downloads directory as a web archive.
+    SavePage,
+    /// Toggle the Web Inspector for the active view.
+    Inspect,
     /// Scroll the active page in a direction `count` steps.
     Scroll(ScrollDir, u32),
     /// Scroll by a page (or half page) up or down.
@@ -273,6 +281,12 @@ impl Command {
                     .unwrap_or(1),
             ),
             "focus-input" => Command::FocusInput(count(1)),
+            "view-source" => Command::ViewSource {
+                tab: matches!(rest.first(), Some(&"tab")),
+            },
+            "print" => Command::Print,
+            "save" => Command::SavePage,
+            "inspect" => Command::Inspect,
             "scroll" => Command::Scroll(parse_dir(rest.first())?, 1),
             "scroll-page" => Command::ScrollPage {
                 down: matches!(rest.first(), Some(&"down")),
@@ -527,6 +541,10 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("page-prev", "Follow the previous-page link"),
     ("url-increment", "Step a number in the URL"),
     ("focus-input", "Focus the first page input"),
+    ("view-source", "View the page HTML source"),
+    ("print", "Print the current page"),
+    ("save", "Save the page as a web archive"),
+    ("inspect", "Toggle the web inspector"),
     ("scroll", "Scroll in a direction"),
     ("scroll-page", "Scroll by a page"),
     ("scroll-to-perc", "Scroll to a percentage of the page"),

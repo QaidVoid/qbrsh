@@ -48,6 +48,15 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | `yank [url\|title]` | copy the URL or title |
 | `clipboard-open [clipboard\|primary] [current\|tab]` | open clipboard or selection text |
 
+## Page tools
+
+| Command | Description |
+| --- | --- |
+| `view-source [tab]` | show the page HTML source (in a new tab with `tab`) |
+| `print` | open the system print dialog |
+| `save` | save the page as an MHTML web archive in the downloads directory |
+| `inspect` | toggle the web inspector (also `<F12>`) |
+
 ## Marks and sessions
 
 | Command | Description |

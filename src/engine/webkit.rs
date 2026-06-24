@@ -14,10 +14,10 @@ use webkit6::prelude::*;
 use webkit6::{
     CacheModel, CookiePersistentStorage, Download, FindOptions, GeolocationPermissionRequest,
     HardwareAccelerationPolicy, MemoryPressureSettings, NavigationPolicyDecision, NetworkSession,
-    NotificationPermissionRequest, PermissionRequest, PolicyDecisionType, ResponsePolicyDecision,
-    Settings, TLSErrorsPolicy, UserContentFilter, UserContentFilterStore,
-    UserContentInjectedFrames, UserMediaPermissionRequest, UserScript, UserScriptInjectionTime,
-    WebContext, WebView, WebsiteData, WebsiteDataTypes,
+    NotificationPermissionRequest, PermissionRequest, PolicyDecisionType, PrintOperation,
+    ResponsePolicyDecision, SaveMode, Settings, TLSErrorsPolicy, UserContentFilter,
+    UserContentFilterStore, UserContentInjectedFrames, UserMediaPermissionRequest, UserScript,
+    UserScriptInjectionTime, WebContext, WebView, WebsiteData, WebsiteDataTypes,
 };
 
 use crate::adblock;
@@ -423,7 +423,12 @@ impl WebKitEngine {
             self.site_prefs.clone(),
             self.favicons.clone(),
         );
-        Box::new(WebKitView { view })
+        Box::new(WebKitView {
+            view,
+            downloads_dir: self.downloads_dir.clone(),
+            inspector_open: Rc::new(Cell::new(false)),
+            inspector_hooked: Cell::new(false),
+        })
     }
 }
 
@@ -948,11 +953,21 @@ fn build_settings(debug: bool, user_agent: &str) -> Settings {
 /// A WebKitGTK-backed view.
 struct WebKitView {
     view: WebView,
+    /// Where `save_mhtml` writes the web archive.
+    downloads_dir: PathBuf,
+    /// Whether the Web Inspector is currently open, for a reliable toggle.
+    inspector_open: Rc<Cell<bool>>,
+    /// Whether the inspector's `closed` signal has been connected yet.
+    inspector_hooked: Cell<bool>,
 }
 
 impl EngineView for WebKitView {
     fn load_uri(&self, uri: &str) {
         WebViewExt::load_uri(&self.view, uri);
+    }
+
+    fn load_html(&self, html: &str) {
+        self.view.load_html(html, None);
     }
 
     fn reload(&self, bypass_cache: bool) {
@@ -1032,6 +1047,60 @@ impl EngineView for WebKitView {
     fn find_clear(&self) {
         if let Some(fc) = self.view.find_controller() {
             fc.search_finish();
+        }
+    }
+
+    fn print(&self) {
+        // Run the interactive system print dialog for this view. The parent is
+        // left to WebKit (the view's own toplevel).
+        let op = PrintOperation::new(&self.view);
+        op.run_dialog(None::<&gtk4::Window>);
+    }
+
+    fn save_mhtml(&self, on_done: Box<dyn FnOnce(Result<String, String>)>) {
+        // Derive a name from the title, then the host, then a generic fallback,
+        // and de-duplicate it inside the downloads directory.
+        let title = self.view.title().map(|t| t.to_string()).unwrap_or_default();
+        let uri = self.view.uri().map(|u| u.to_string()).unwrap_or_default();
+        let base = if !title.trim().is_empty() {
+            title.trim().to_string()
+        } else {
+            adblock::host_of(&uri)
+                .map(|h| h.to_string())
+                .unwrap_or_else(|| "page".to_string())
+        };
+        let dest = safe_download_path(&self.downloads_dir, &format!("{base}.mhtml"));
+        let file = gtk4::gio::File::for_path(&dest);
+        let shown = dest.display().to_string();
+        self.view.save_to_file(
+            &file,
+            SaveMode::Mhtml,
+            None::<&gtk4::gio::Cancellable>,
+            move |result| {
+                on_done(match result {
+                    Ok(()) => Ok(shown),
+                    Err(e) => Err(e.to_string()),
+                });
+            },
+        );
+    }
+
+    fn toggle_inspector(&self) {
+        let Some(inspector) = self.view.inspector() else {
+            return;
+        };
+        if self.inspector_open.get() {
+            inspector.close();
+            self.inspector_open.set(false);
+        } else {
+            // Keep the flag in sync if devtools is closed through its own UI.
+            // Connect once so handlers do not accumulate across toggles.
+            if !self.inspector_hooked.replace(true) {
+                let open = self.inspector_open.clone();
+                inspector.connect_closed(move |_| open.set(false));
+            }
+            inspector.show();
+            self.inspector_open.set(true);
         }
     }
 
