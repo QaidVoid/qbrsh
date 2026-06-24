@@ -134,8 +134,13 @@ pub enum Effect {
     /// Load a named session; its URLs return as `Msg::SessionLoaded`.
     LoadSession { name: String },
     /// Persist the live session (open tab URLs and active index) to the
-    /// autosave file on shutdown.
-    SaveAutosave { urls: Vec<String>, active: usize },
+    /// autosave file on shutdown. `scroll` is the active tab's last known
+    /// scroll offset, if any.
+    SaveAutosave {
+        urls: Vec<String>,
+        active: usize,
+        scroll: Option<(i64, i64)>,
+    },
     /// Fire a cold-event plugin hook with a string argument.
     FireHook { event: String, arg: String },
     /// Recompile and reload all plugins.

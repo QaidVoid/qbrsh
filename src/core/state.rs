@@ -86,6 +86,11 @@ pub struct Tab {
     pub zoom: f64,
     /// Whether the tab browses on the ephemeral (private) session.
     pub private: bool,
+    /// Remembered scroll offsets for pages visited in this tab.
+    pub scroll_offsets: ScrollStore,
+    /// Set by a back or forward navigation: the next load-finished should
+    /// restore the saved offset for the page it lands on.
+    pub restore_scroll: bool,
 }
 
 impl Tab {
@@ -99,7 +104,42 @@ impl Tab {
             crashed: false,
             zoom: 1.0,
             private: false,
+            scroll_offsets: ScrollStore::default(),
+            restore_scroll: false,
         }
+    }
+}
+
+/// Maximum remembered scroll offsets per tab before the least recently used is
+/// evicted.
+const SCROLL_STORE_BOUND: usize = 50;
+
+/// A bounded, per-tab map from a page URL to its last known scroll offset.
+/// The most recently recorded entry is kept at the back; recording past the
+/// bound evicts the least recently used (front) entry.
+#[derive(Debug, Clone, Default)]
+pub struct ScrollStore {
+    entries: Vec<(String, (i64, i64))>,
+}
+
+impl ScrollStore {
+    /// Record `offset` for `url`, moving it to most-recently-used and evicting
+    /// the least recently used entry if the store is over its bound.
+    pub fn record(&mut self, url: &str, offset: (i64, i64)) {
+        self.entries.retain(|(u, _)| u != url);
+        self.entries.push((url.to_string(), offset));
+        if self.entries.len() > SCROLL_STORE_BOUND {
+            self.entries.remove(0);
+        }
+    }
+
+    /// The remembered offset for `url`, if any.
+    pub fn get(&self, url: &str) -> Option<(i64, i64)> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|(u, _)| u == url)
+            .map(|(_, o)| *o)
     }
 }
 
@@ -1172,6 +1212,9 @@ pub struct State {
     pub tabs_collapsed: bool,
     /// Whether the top-level window is fullscreen.
     pub fullscreen: bool,
+    /// Scroll offset restored from the autosave, applied to the active tab on
+    /// its first load-finished and then cleared.
+    pub restored_scroll: Option<(i64, i64)>,
     /// Pending permission prompts; the front item is the one being shown.
     pub prompts: VecDeque<PermissionPrompt>,
     /// State of the permission management list view.

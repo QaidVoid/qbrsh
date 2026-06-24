@@ -30,6 +30,10 @@ Counts work where they make sense, for example `5j` scrolls down five steps.
 | `o` | open a URL in the current tab |
 | `O` | open, prefilled with the current URL |
 
+Going back or forward reloads the page and then returns it to roughly where you
+left it once it finishes loading. A restored session returns the active tab near
+its last position. A plain reload (`r`) opens at the top.
+
 ## Hints
 
 | Key | Action |

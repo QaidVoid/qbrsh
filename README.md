@@ -120,6 +120,14 @@ selecting an already-visible tab focuses its pane. `<C-w>w`/`W` cycle focus,
 `<C-w>o` closes every pane except the focused one. Pane layout is not restored
 across restarts (only tabs are).
 
+Scroll position is remembered. When you go back or forward (`H`/`L`), the page
+reloads (the back/forward cache is disabled) and is then returned to roughly
+where you left it once it finishes loading. A restored session also returns the
+active tab near its last position. Because the offset is keyed by URL and
+clamped to the reloaded page, a page whose layout changed since your last visit
+may land approximately rather than exactly. A plain reload (`r`) still opens at
+the top.
+
 Downloads are saved to your downloads directory (XDG `Downloads`, or
 `~/.local/share/qbrsh/downloads` as a fallback) with a safe, non-colliding
 filename. Start, progress, completion, and failure are reported in the status

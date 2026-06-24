@@ -74,6 +74,28 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                     purpose: JsPurpose::FireAndForget,
                 });
             }
+            // Restore a remembered scroll offset: first after a back/forward
+            // reload (keyed by the landing URL), otherwise the autosaved offset
+            // on the restored active tab's first finished load.
+            if event == LoadEvent::Finished {
+                let back_forward = state.tabs.get(tab).and_then(|t| {
+                    t.restore_scroll
+                        .then(|| t.scroll_offsets.get(&t.url))
+                        .flatten()
+                });
+                if let Some(t) = state.tabs.get_mut(tab) {
+                    t.restore_scroll = false;
+                }
+                if let Some(offset) = back_forward {
+                    let eff = restore_scroll_effect(state, tab, offset);
+                    effects.push(eff);
+                } else if state.tabs.active_id() == Some(tab)
+                    && let Some(offset) = state.restored_scroll.take()
+                {
+                    let eff = restore_scroll_effect(state, tab, offset);
+                    effects.push(eff);
+                }
+            }
             if state.tabs.active_id() == Some(tab) {
                 effects.push(Effect::RenderStatus);
             }
@@ -199,6 +221,15 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                             tab,
                             uri: normalize_target(&url, &state.config.search),
                         }];
+                    }
+                    Vec::new()
+                }
+                JsPurpose::ReadScrollOffset { url } => {
+                    if let Ok(text) = result
+                        && let Some(offset) = parse_offset(&text)
+                        && let Some(t) = state.tabs.get_mut(tab)
+                    {
+                        t.scroll_offsets.record(&url, offset);
                     }
                     Vec::new()
                 }
@@ -1089,7 +1120,12 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             let uri = normalize_target(&raw, &state.config.search);
             match target {
                 OpenTarget::Current => match state.tabs.active_id() {
-                    Some(tab) => vec![Effect::LoadUri { tab, uri }],
+                    Some(tab) => {
+                        // Capture the leaving page's offset before it is replaced.
+                        let mut effects = capture_scroll(state);
+                        effects.push(Effect::LoadUri { tab, uri });
+                        effects
+                    }
                     None => open_tab(state, uri, false, false),
                 },
                 OpenTarget::Tab => open_tab(state, uri, false, false),
@@ -1097,14 +1133,8 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
         }
 
-        Command::Back(count) => with_active(state, |tab| {
-            (0..count.max(1)).map(|_| Effect::GoBack { tab }).collect()
-        }),
-        Command::Forward(count) => with_active(state, |tab| {
-            (0..count.max(1))
-                .map(|_| Effect::GoForward { tab })
-                .collect()
-        }),
+        Command::Back(count) => navigate_history(state, count, true),
+        Command::Forward(count) => navigate_history(state, count, false),
         Command::Reload { bypass_cache } => {
             with_active(state, |tab| vec![Effect::Reload { tab, bypass_cache }])
         }
@@ -1691,8 +1721,24 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
         Command::Quit => {
             let urls = state.tabs.persistable_urls();
             let active = state.tabs.persistable_active_index();
+            // The active tab's last known offset, unless it is private (private
+            // tabs are excluded from the autosave entirely).
+            let scroll = state.tabs.active().and_then(|t| {
+                if t.private {
+                    None
+                } else {
+                    t.scroll_offsets.get(&t.url)
+                }
+            });
             state.running = false;
-            vec![Effect::SaveAutosave { urls, active }, Effect::Quit]
+            vec![
+                Effect::SaveAutosave {
+                    urls,
+                    active,
+                    scroll,
+                },
+                Effect::Quit,
+            ]
         }
         Command::Nop => Vec::new(),
     }
@@ -1915,6 +1961,85 @@ fn scroll(state: &mut State, script: String) -> Vec<Effect> {
 }
 
 const SCROLL_PERCENT_SCRIPT: &str = "(function(){var e=document.documentElement;var m=e.scrollHeight-e.clientHeight;return m<=0?0:Math.round(e.scrollTop/m*100);})()";
+
+/// Reads the page's current scroll offset as the space-joined `scrollX scrollY`.
+const READ_SCROLL_OFFSET_SCRIPT: &str =
+    "(function(){return Math.round(window.scrollX)+' '+Math.round(window.scrollY);})()";
+
+/// Capture the active tab's current scroll offset, keyed by its current URL, so
+/// returning to that page can restore it. Emits a read-offset evaluation.
+fn capture_scroll(state: &mut State) -> Vec<Effect> {
+    let Some(tab) = state.tabs.active_id() else {
+        return Vec::new();
+    };
+    let Some(url) = state.tabs.active().map(|t| t.url.clone()) else {
+        return Vec::new();
+    };
+    if url.is_empty() || url == "about:blank" {
+        return Vec::new();
+    }
+    let id = state.alloc_request_id();
+    state
+        .pending_js
+        .insert(id, JsPurpose::ReadScrollOffset { url: url.clone() });
+    vec![Effect::EvalJs {
+        id,
+        tab,
+        script: READ_SCROLL_OFFSET_SCRIPT.to_string(),
+        purpose: JsPurpose::ReadScrollOffset { url },
+    }]
+}
+
+/// Navigate the active tab back or forward `count` steps. Captures the leaving
+/// page's scroll offset and marks the tab so the reloaded landing page restores
+/// its saved offset on load-finished.
+fn navigate_history(state: &mut State, count: u32, back: bool) -> Vec<Effect> {
+    let Some(tab) = state.tabs.active_id() else {
+        return Vec::new();
+    };
+    let mut effects = capture_scroll(state);
+    if let Some(t) = state.tabs.get_mut(tab) {
+        t.restore_scroll = true;
+    }
+    effects.extend((0..count.max(1)).map(|_| {
+        if back {
+            Effect::GoBack { tab }
+        } else {
+            Effect::GoForward { tab }
+        }
+    }));
+    effects
+}
+
+/// Parse the `"x y"` offset returned by [`READ_SCROLL_OFFSET_SCRIPT`].
+fn parse_offset(text: &str) -> Option<(i64, i64)> {
+    let mut parts = text.split_whitespace();
+    let x = parts.next()?.parse::<f64>().ok()? as i64;
+    let y = parts.next()?.parse::<f64>().ok()? as i64;
+    Some((x, y))
+}
+
+/// A `scrollTo` that clamps to the reloaded page's bounds so it never scrolls
+/// past the end when the page is now shorter than it was.
+fn scroll_to_script(x: i64, y: i64) -> String {
+    format!(
+        "(function(){{var e=document.documentElement;\
+var mx=Math.max(0,e.scrollWidth-e.clientWidth);\
+var my=Math.max(0,e.scrollHeight-e.clientHeight);\
+window.scrollTo(Math.min({x},mx),Math.min({y},my));}})()"
+    )
+}
+
+/// Emit a fire-and-forget clamped `scrollTo` for the given tab.
+fn restore_scroll_effect(state: &mut State, tab: TabId, offset: (i64, i64)) -> Effect {
+    let id = state.alloc_request_id();
+    Effect::EvalJs {
+        id,
+        tab,
+        script: scroll_to_script(offset.0, offset.1),
+        purpose: JsPurpose::FireAndForget,
+    }
+}
 
 /// Encode a string as a JSON literal for safe embedding as a JavaScript argument,
 /// so labels and prefixes cannot break out of the call (no string interpolation).
@@ -2561,6 +2686,130 @@ mod tests {
         assert_eq!(state.mode.current, Mode::Insert);
     }
 
+    // --- Scroll memory ---
+
+    #[test]
+    fn back_and_forward_capture_offset_and_mark_restore() {
+        let mut state = state_at("https://example.com/article");
+        let tab = state.tabs.active_id().unwrap();
+        let effects = update(&mut state, Msg::Command(Command::Back(1)));
+        // A read-offset evaluation is emitted alongside the back navigation.
+        let captured_url = effects.iter().find_map(|e| match e {
+            Effect::EvalJs {
+                purpose: JsPurpose::ReadScrollOffset { url },
+                ..
+            } => Some(url.clone()),
+            _ => None,
+        });
+        assert_eq!(captured_url.as_deref(), Some("https://example.com/article"));
+        assert!(effects.iter().any(|e| matches!(e, Effect::GoBack { .. })));
+        assert!(state.tabs.get(tab).unwrap().restore_scroll);
+
+        // Forward behaves the same.
+        let mut state = state_at("https://example.com/article");
+        let effects = update(&mut state, Msg::Command(Command::Forward(1)));
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::EvalJs {
+                purpose: JsPurpose::ReadScrollOffset { .. },
+                ..
+            }
+        )));
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::GoForward { .. }))
+        );
+    }
+
+    #[test]
+    fn offset_result_is_recorded_against_captured_url() {
+        let mut state = state_at("https://example.com/a");
+        let tab = state.tabs.active_id().unwrap();
+        let id = state.alloc_request_id();
+        state.pending_js.insert(
+            id,
+            JsPurpose::ReadScrollOffset {
+                url: "https://example.com/a".to_string(),
+            },
+        );
+        // The tab has since navigated elsewhere; the offset must key off the
+        // captured URL, not the current one.
+        state.tabs.get_mut(tab).unwrap().url = "https://example.com/b".to_string();
+        update(
+            &mut state,
+            Msg::JsResult {
+                id,
+                tab,
+                result: Ok("0 640".to_string()),
+            },
+        );
+        let store = &state.tabs.get(tab).unwrap().scroll_offsets;
+        assert_eq!(store.get("https://example.com/a"), Some((0, 640)));
+        assert_eq!(store.get("https://example.com/b"), None);
+    }
+
+    #[test]
+    fn load_finished_restores_after_back_only() {
+        let mut state = state_at("https://example.com/a");
+        let tab = state.tabs.active_id().unwrap();
+        {
+            let t = state.tabs.get_mut(tab).unwrap();
+            t.scroll_offsets.record("https://example.com/a", (0, 500));
+            t.restore_scroll = true;
+        }
+        let effects = update(
+            &mut state,
+            Msg::Load {
+                tab,
+                event: LoadEvent::Finished,
+            },
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::EvalJs { .. })));
+        // The awaiting flag is cleared after restoring.
+        assert!(!state.tabs.get(tab).unwrap().restore_scroll);
+
+        // A plain reload (no back/forward, no awaiting flag) restores nothing.
+        let effects = update(
+            &mut state,
+            Msg::Load {
+                tab,
+                event: LoadEvent::Finished,
+            },
+        );
+        assert!(!effects.iter().any(|e| matches!(e, Effect::EvalJs { .. })));
+    }
+
+    #[test]
+    fn scroll_store_evicts_least_recently_used() {
+        let mut store = crate::core::state::ScrollStore::default();
+        for i in 0..60 {
+            store.record(&format!("https://example.com/{i}"), (0, i as i64));
+        }
+        // Bound is 50: the 10 earliest entries (0..=9) are evicted, the rest kept.
+        assert_eq!(store.get("https://example.com/9"), None);
+        assert_eq!(store.get("https://example.com/10"), Some((0, 10)));
+        assert_eq!(store.get("https://example.com/59"), Some((0, 59)));
+    }
+
+    #[test]
+    fn autosave_carries_active_tab_offset() {
+        let mut state = state_at("https://example.com/a");
+        let tab = state.tabs.active_id().unwrap();
+        state
+            .tabs
+            .get_mut(tab)
+            .unwrap()
+            .scroll_offsets
+            .record("https://example.com/a", (0, 720));
+        let effects = update(&mut state, Msg::Command(Command::Quit));
+        let scroll = effects.iter().find_map(|e| match e {
+            Effect::SaveAutosave { scroll, .. } => Some(*scroll),
+            _ => None,
+        });
+        assert_eq!(scroll, Some(Some((0, 720))));
+    }
+
     #[test]
     fn passthrough_mode_enter_leave_and_key_noop() {
         let mut state = state_with_tab();
@@ -3077,13 +3326,10 @@ mod tests {
                 input: "rust-lang.org".to_string(),
             }),
         );
-        assert_eq!(
-            effects,
-            vec![Effect::LoadUri {
-                tab,
-                uri: "https://rust-lang.org".to_string()
-            }]
-        );
+        assert!(effects.contains(&Effect::LoadUri {
+            tab,
+            uri: "https://rust-lang.org".to_string()
+        }));
     }
 
     #[test]
@@ -3097,13 +3343,10 @@ mod tests {
                 input: "hello world".to_string(),
             }),
         );
-        assert_eq!(
-            effects,
-            vec![Effect::LoadUri {
-                tab,
-                uri: "https://duckduckgo.com/?q=hello+world".to_string()
-            }]
-        );
+        assert!(effects.contains(&Effect::LoadUri {
+            tab,
+            uri: "https://duckduckgo.com/?q=hello+world".to_string()
+        }));
     }
 
     #[test]
@@ -3134,7 +3377,11 @@ mod tests {
         let mut state = state_with_tab();
         let tab = state.tabs.active_id().unwrap();
         let effects = update(&mut state, Msg::Command(Command::Back(3)));
-        assert_eq!(effects, vec![Effect::GoBack { tab }; 3]);
+        let gobacks = effects
+            .iter()
+            .filter(|e| matches!(e, Effect::GoBack { tab: t } if *t == tab))
+            .count();
+        assert_eq!(gobacks, 3);
     }
 
     #[test]
@@ -3568,7 +3815,8 @@ mod tests {
         // Quit persists the live session before tearing down.
         assert!(effects.contains(&Effect::SaveAutosave {
             urls: vec!["https://example.com".to_string()],
-            active: 0
+            active: 0,
+            scroll: None,
         }));
         assert!(effects.contains(&Effect::Quit));
     }

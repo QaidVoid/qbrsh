@@ -655,8 +655,19 @@ impl EffectRunner for GtkEffectRunner {
                     .unwrap_or_default();
                 mailbox.send(Msg::SessionLoaded(urls));
             }
-            Effect::SaveAutosave { urls, active } => {
-                save_autosave(&self.autosave_path, &Autosave { active, urls });
+            Effect::SaveAutosave {
+                urls,
+                active,
+                scroll,
+            } => {
+                save_autosave(
+                    &self.autosave_path,
+                    &Autosave {
+                        active,
+                        urls,
+                        scroll,
+                    },
+                );
             }
             Effect::FireHook { event, arg } => self.plugins.fire(&event, &arg),
             Effect::ReloadPlugins => {
@@ -796,11 +807,16 @@ fn data_dir() -> PathBuf {
 }
 
 /// The live session persisted on shutdown and restored on startup: the open
-/// tabs' URLs and the index of the active tab.
+/// tabs' URLs, the index of the active tab, and the active tab's scroll offset.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Autosave {
     active: usize,
     urls: Vec<String>,
+    /// The active tab's scroll offset. Absent in files written before scroll
+    /// memory existed, so an older autosave still restores tabs and the active
+    /// index.
+    #[serde(default)]
+    scroll: Option<(i64, i64)>,
 }
 
 /// Load the autosave at `path`. Returns `None` when the file is missing or does
@@ -877,17 +893,18 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     // Decide the initial tab set: restore the autosaved session on a clean
     // launch (no explicit URL) when restore is enabled, else open the homepage.
     let autosave_path = dir.join("session.json");
-    let (initial_urls, active_index) = match initial_url {
-        Some(url) => (vec![url], 0),
+    let (initial_urls, active_index, restored_scroll) = match initial_url {
+        Some(url) => (vec![url], 0, None),
         None if state.config.session.restore => match load_autosave(&autosave_path) {
             Some(a) if !a.urls.is_empty() => {
                 let active = a.active.min(a.urls.len() - 1);
-                (a.urls, active)
+                (a.urls, active, a.scroll)
             }
-            _ => (vec![state.config.homepage.clone()], 0),
+            _ => (vec![state.config.homepage.clone()], 0, None),
         },
-        None => (vec![state.config.homepage.clone()], 0),
+        None => (vec![state.config.homepage.clone()], 0, None),
     };
+    state.restored_scroll = restored_scroll;
 
     let default_zoom = state.config.zoom.default;
     let mut views: HashMap<TabId, Box<dyn EngineView>> = HashMap::new();
@@ -1010,11 +1027,13 @@ mod tests {
         let autosave = Autosave {
             active: 1,
             urls: vec!["https://a.test".to_string(), "https://b.test".to_string()],
+            scroll: Some((0, 420)),
         };
         save_autosave(&path, &autosave);
         let loaded = load_autosave(&path).expect("autosave loads");
         assert_eq!(loaded.active, 1);
         assert_eq!(loaded.urls, autosave.urls);
+        assert_eq!(loaded.scroll, Some((0, 420)));
         let _ = std::fs::remove_file(&path);
     }
 

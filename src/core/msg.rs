@@ -25,12 +25,16 @@ pub enum LoadEvent {
 /// The engine only knows a [`RequestId`] and a raw result, so the purpose is
 /// recorded in state when the effect is emitted and looked up when the result
 /// arrives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JsPurpose {
     /// No result handling needed.
     FireAndForget,
     /// Result is the vertical scroll percentage (0-100).
     ReadScrollPercent,
+    /// Result is the page's `scrollX`/`scrollY`, to record against the carried
+    /// URL (the page the read was requested for, so a late result still lands
+    /// on the right page).
+    ReadScrollOffset { url: String },
     /// Result is the space-joined list of rendered hint labels.
     HintsShown,
     /// Result is the href of a followed hint, to open in a new tab.
