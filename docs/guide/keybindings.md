@@ -59,6 +59,7 @@ followed. `Escape` cancels.
 | `co` | close all other tabs |
 | `<A-1>` .. `<A-9>` | focus tab 1 to 9 |
 | `gt` | open the tab picker (`:buffer`) |
+| `gp` | pin or unpin the active tab |
 
 ## Yank, marks, content
 

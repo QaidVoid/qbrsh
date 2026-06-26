@@ -40,6 +40,7 @@ move the highlight, `Space` applies it, `Enter` runs it.
 | `tab-only` | close all other tabs |
 | `undo` | reopen the last closed tab |
 | `buffer [query]` | pick an open tab by title or URL |
+| `pin` / `unpin` / `pin-toggle` | pin, unpin, or toggle the active tab |
 
 ## Hints and yank
 

@@ -97,8 +97,8 @@ pub enum Msg {
     /// The configuration file was reloaded from disk. Boxed because `Config` is
     /// large relative to the other message variants.
     ConfigLoaded(Box<Config>),
-    /// A session's tab URLs were loaded from disk.
-    SessionLoaded(Vec<String>),
+    /// A session's tabs (`url`, `pinned`) were loaded from disk.
+    SessionLoaded(Vec<(String, bool)>),
     /// Asynchronous results for the history management view, tagged with the
     /// generation they were requested for so stale results can be ignored.
     HistoryViewResult {

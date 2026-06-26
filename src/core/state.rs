@@ -88,6 +88,8 @@ pub struct Tab {
     pub zoom: f64,
     /// Whether the tab browses on the ephemeral (private) session.
     pub private: bool,
+    /// Whether the tab is pinned (sorted to the top, protected from close).
+    pub pinned: bool,
     /// Remembered scroll offsets for pages visited in this tab.
     pub scroll_offsets: ScrollStore,
     /// Set by a back or forward navigation: the next load-finished should
@@ -106,6 +108,7 @@ impl Tab {
             crashed: false,
             zoom: 1.0,
             private: false,
+            pinned: false,
             scroll_offsets: ScrollStore::default(),
             restore_scroll: false,
         }
@@ -151,6 +154,8 @@ pub struct ClosedTab {
     pub url: String,
     /// Whether the closed tab was private, so reopening preserves privacy.
     pub private: bool,
+    /// Whether the closed tab was pinned, so reopening preserves pinning.
+    pub pinned: bool,
 }
 
 /// Maximum number of closed tabs retained for undo.
@@ -258,14 +263,25 @@ impl Tabs {
         if self.tabs.len() < 2 {
             return Vec::new();
         }
-        let kept = self.tabs.swap_remove(self.active);
-        let removed = std::mem::take(&mut self.tabs);
-        let closed_ids = removed.iter().map(|t| t.id).collect();
-        for tab in &removed {
-            self.push_undo(tab);
+        let active_id = self.active_id();
+        let all = std::mem::take(&mut self.tabs);
+        let mut kept = Vec::new();
+        let mut closed_ids = Vec::new();
+        for tab in all {
+            // Keep the active tab and every pinned tab; close the rest.
+            if Some(tab.id) == active_id || tab.pinned {
+                kept.push(tab);
+            } else {
+                self.push_undo(&tab);
+                closed_ids.push(tab.id);
+            }
         }
-        self.tabs = vec![kept];
-        self.active = 0;
+        self.tabs = kept;
+        if let Some(id) = active_id {
+            self.active = self.tabs.iter().position(|t| t.id == id).unwrap_or(0);
+        } else {
+            self.active = 0;
+        }
         closed_ids
     }
 
@@ -283,6 +299,9 @@ impl Tabs {
         let tab = self.tabs.remove(self.active);
         self.tabs.insert(target, tab);
         self.active = target;
+        // A move that would cross the pinned boundary is undone by the resort, so
+        // `gJ`/`gK` reorder a tab only within its own group.
+        self.resort_pinned();
         true
     }
 
@@ -291,17 +310,8 @@ impl Tabs {
         self.undo_stack.pop()
     }
 
-    /// The URLs of the non-private open tabs, in order. Private tabs are never
-    /// persisted to disk (autosave or named sessions).
-    pub fn persistable_urls(&self) -> Vec<String> {
-        self.tabs
-            .iter()
-            .filter(|t| !t.private)
-            .map(|t| t.url.clone())
-            .collect()
-    }
-
-    /// The index into `persistable_urls` of the active tab, or 0 when the active
+    /// The index into the persistable (non-private) tabs of the active tab, or 0
+    /// when the active
     /// tab is private or there are no persistable tabs.
     pub fn persistable_active_index(&self) -> usize {
         match self.tabs.get(self.active) {
@@ -320,10 +330,65 @@ impl Tabs {
         self.tabs.iter()
     }
 
+    /// Stable-partition the tabs so pinned ones come first, preserving relative
+    /// order within each group, and recompute the active index from the active
+    /// tab's id so focus follows the tab rather than the slot.
+    fn resort_pinned(&mut self) {
+        let active_id = self.active_id();
+        // `sort_by_key` is stable, so equal keys keep their relative order.
+        self.tabs.sort_by_key(|t| !t.pinned);
+        if let Some(id) = active_id
+            && let Some(idx) = self.tabs.iter().position(|t| t.id == id)
+        {
+            self.active = idx;
+        }
+    }
+
+    /// Set the active tab's pinned flag and resort. Returns whether it changed.
+    pub fn set_active_pinned(&mut self, pinned: bool) -> bool {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return false;
+        };
+        if tab.pinned == pinned {
+            return false;
+        }
+        tab.pinned = pinned;
+        self.resort_pinned();
+        true
+    }
+
+    /// Toggle the active tab's pinned flag and resort. Returns whether the active
+    /// tab existed (so a toggle happened).
+    pub fn toggle_active_pinned(&mut self) -> bool {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return false;
+        };
+        tab.pinned = !tab.pinned;
+        self.resort_pinned();
+        true
+    }
+
+    /// Re-apply the pinned-first ordering after tabs were created or flagged
+    /// outside the toggle methods (for example on session restore).
+    pub fn repin_sort(&mut self) {
+        self.resort_pinned();
+    }
+
+    /// The non-private open tabs as `(url, pinned)` records, in order. Private
+    /// tabs are never persisted to disk (autosave or named sessions).
+    pub fn persistable_tabs(&self) -> Vec<(String, bool)> {
+        self.tabs
+            .iter()
+            .filter(|t| !t.private)
+            .map(|t| (t.url.clone(), t.pinned))
+            .collect()
+    }
+
     fn push_undo(&mut self, tab: &Tab) {
         self.undo_stack.push(ClosedTab {
             url: tab.url.clone(),
             private: tab.private,
+            pinned: tab.pinned,
         });
         if self.undo_stack.len() > UNDO_LIMIT {
             self.undo_stack.remove(0);

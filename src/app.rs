@@ -156,6 +156,7 @@ impl GtkEffectRunner {
              #qbrsh-tabs .tab-collapsed {{ padding: 3px 0; }}\n\
              #qbrsh-tabs .tab-mounted {{ border-left: 2px solid {accent}; }}\n\
              #qbrsh-tabs .tab-private {{ border-right: 3px solid {accent}; font-style: italic; }}\n\
+             #qbrsh-tabs .tab-pinned {{ background-color: alpha({accent}, 0.16); }}\n\
              #qbrsh-tabs .tab-active {{ background-color: {accent}; }}\n\
              #qbrsh-tabs .tab-active label {{ color: {bg}; }}\n\
              #qbrsh-layout {{ background-color: {bg}; }}\n\
@@ -495,6 +496,9 @@ impl GtkEffectRunner {
             if tab.private {
                 row.add_css_class("tab-private");
             }
+            if tab.pinned {
+                row.add_css_class("tab-pinned");
+            }
 
             let icon = match favicons.get(&tab.id) {
                 Some(texture) => gtk4::Image::from_paintable(Some(texture)),
@@ -511,7 +515,12 @@ impl GtkEffectRunner {
                 icon.set_halign(gtk4::Align::Center);
                 row.set_tooltip_text(Some(text));
             } else {
-                let label = gtk4::Label::new(Some(text));
+                let label_text = if tab.pinned {
+                    format!("📌 {text}")
+                } else {
+                    text.to_string()
+                };
+                let label = gtk4::Label::new(Some(&label_text));
                 label.set_xalign(0.0);
                 label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
                 label.set_width_chars(0);
@@ -742,30 +751,40 @@ impl EffectRunner for GtkEffectRunner {
                 self.engine.clear_website_data(scope, host, mailbox.clone());
             }
             Effect::ReloadConfig => mailbox.send(Msg::ConfigLoaded(Box::new(config::load()))),
-            Effect::SaveSession { name, urls } => {
+            Effect::SaveSession { name, tabs } => {
                 if let Some(path) = self.session_path(&name) {
                     let _ = std::fs::create_dir_all(&self.sessions_dir);
-                    let _ = std::fs::write(path, urls.join("\n"));
+                    // One tab per line as `<pin>\t<url>`, where `<pin>` is 1/0.
+                    let body = tabs
+                        .iter()
+                        .map(|(url, pinned)| format!("{}\t{url}", u8::from(*pinned)))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let _ = std::fs::write(path, body);
                 }
             }
             Effect::LoadSession { name } => {
-                let urls = self
+                let tabs = self
                     .session_path(&name)
                     .and_then(|p| std::fs::read_to_string(p).ok())
-                    .map(|s| s.lines().map(str::to_string).collect::<Vec<_>>())
+                    .map(|s| s.lines().map(parse_session_line).collect::<Vec<_>>())
                     .unwrap_or_default();
-                mailbox.send(Msg::SessionLoaded(urls));
+                mailbox.send(Msg::SessionLoaded(tabs));
             }
             Effect::SaveAutosave {
-                urls,
+                tabs,
                 active,
                 scroll,
             } => {
+                let tabs = tabs
+                    .into_iter()
+                    .map(|(url, pinned)| PersistedTab { url, pinned })
+                    .collect();
                 save_autosave(
                     &self.autosave_path,
                     &Autosave {
                         active,
-                        urls,
+                        tabs,
                         scroll,
                     },
                 );
@@ -908,17 +927,35 @@ fn data_dir() -> PathBuf {
     dir
 }
 
+/// One persisted tab: its URL and whether it was pinned.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedTab {
+    url: String,
+    #[serde(default)]
+    pinned: bool,
+}
+
 /// The live session persisted on shutdown and restored on startup: the open
-/// tabs' URLs, the index of the active tab, and the active tab's scroll offset.
+/// tabs (URL and pinned flag), the index of the active tab, and the active tab's
+/// scroll offset.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Autosave {
     active: usize,
-    urls: Vec<String>,
+    tabs: Vec<PersistedTab>,
     /// The active tab's scroll offset. Absent in files written before scroll
     /// memory existed, so an older autosave still restores tabs and the active
     /// index.
     #[serde(default)]
     scroll: Option<(i64, i64)>,
+}
+
+/// Parse one named-session line into `(url, pinned)`. New lines are
+/// `<pin>\t<url>`; an older URL-only line (no tab) loads as unpinned.
+fn parse_session_line(line: &str) -> (String, bool) {
+    match line.split_once('\t') {
+        Some((flag, url)) => (url.to_string(), flag == "1"),
+        None => (line.to_string(), false),
+    }
 }
 
 /// Load the autosave at `path`. Returns `None` when the file is missing or does
@@ -995,24 +1032,28 @@ pub fn run(app: &Application, initial_url: Option<String>) {
     // Decide the initial tab set: restore the autosaved session on a clean
     // launch (no explicit URL) when restore is enabled, else open the homepage.
     let autosave_path = dir.join("session.json");
-    let (initial_urls, active_index, restored_scroll) = match initial_url {
-        Some(url) => (vec![url], 0, None),
-        None if state.config.session.restore => match load_autosave(&autosave_path) {
-            Some(a) if !a.urls.is_empty() => {
-                let active = a.active.min(a.urls.len() - 1);
-                (a.urls, active, a.scroll)
-            }
-            _ => (vec![state.config.homepage.clone()], 0, None),
-        },
-        None => (vec![state.config.homepage.clone()], 0, None),
-    };
+    // Each entry is `(url, pinned)`. Saved sessions are already pinned-first, so
+    // setting the flags on restore preserves that order without a resort.
+    let (initial_tabs, active_index, restored_scroll): (Vec<(String, bool)>, usize, _) =
+        match initial_url {
+            Some(url) => (vec![(url, false)], 0, None),
+            None if state.config.session.restore => match load_autosave(&autosave_path) {
+                Some(a) if !a.tabs.is_empty() => {
+                    let active = a.active.min(a.tabs.len() - 1);
+                    let tabs = a.tabs.into_iter().map(|t| (t.url, t.pinned)).collect();
+                    (tabs, active, a.scroll)
+                }
+                _ => (vec![(state.config.homepage.clone(), false)], 0, None),
+            },
+            None => (vec![(state.config.homepage.clone(), false)], 0, None),
+        };
     state.restored_scroll = restored_scroll;
 
     let default_zoom = state.config.zoom.default;
     let mut views: HashMap<TabId, Box<dyn EngineView>> = HashMap::new();
     let mut pane_wrappers: HashMap<TabId, gtk4::Box> = HashMap::new();
     let mut active_tab_id = TabId(0);
-    for (i, raw) in initial_urls.iter().enumerate() {
+    for (i, (raw, pinned)) in initial_tabs.iter().enumerate() {
         // Normalize (so a bare host gains a scheme) and load directly into the
         // new view; this mirrors the runtime Open path without depending on
         // which tab is active when the message is later dispatched.
@@ -1023,6 +1064,7 @@ pub fn run(app: &Application, initial_url: Option<String>) {
         }
         if let Some(t) = state.tabs.get_mut(id) {
             t.zoom = default_zoom;
+            t.pinned = *pinned;
         }
         let view = engine.create_view(id, &uri, false, mailbox.clone());
         view.set_zoom(default_zoom);
@@ -1128,13 +1170,25 @@ mod tests {
         let path = dir.join("session.json");
         let autosave = Autosave {
             active: 1,
-            urls: vec!["https://a.test".to_string(), "https://b.test".to_string()],
+            tabs: vec![
+                PersistedTab {
+                    url: "https://a.test".to_string(),
+                    pinned: true,
+                },
+                PersistedTab {
+                    url: "https://b.test".to_string(),
+                    pinned: false,
+                },
+            ],
             scroll: Some((0, 420)),
         };
         save_autosave(&path, &autosave);
         let loaded = load_autosave(&path).expect("autosave loads");
         assert_eq!(loaded.active, 1);
-        assert_eq!(loaded.urls, autosave.urls);
+        assert_eq!(loaded.tabs.len(), 2);
+        assert_eq!(loaded.tabs[0].url, "https://a.test");
+        assert!(loaded.tabs[0].pinned);
+        assert!(!loaded.tabs[1].pinned);
         assert_eq!(loaded.scroll, Some((0, 420)));
         let _ = std::fs::remove_file(&path);
     }

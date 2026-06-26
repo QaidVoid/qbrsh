@@ -44,6 +44,7 @@ cargo run
 | `<C-d>`/`<C-u>` | half page | `J` / `K` | next / prev tab |
 | `o` / `O` | open / open current URL | `d` / `u` | close / reopen tab |
 | `t` | open in new tab | `gC` `gJ` `gK` | clone / move tab |
+| `gt` | tab picker | `gp` | pin / unpin tab |
 | `:` | command line | `<A-1>`..`<A-9>` | focus tab N |
 | `i` / `Esc` | insert / leave mode | `yy` / `yt` | yank url / title |
 | `m` / `b` | save / load quickmark | `M` / `gb` | bookmark / load |
@@ -82,7 +83,7 @@ is active. Press `Esc` to return to Normal mode.
 `:bookmark-add/load/del`, `:find-next/prev`, `:zoom-in/out/reset`, `:zoom <pct>`,
 `:view-source`, `:print`, `:save`, `:inspect`,
 `:set`, `:config-source`, `:darkmode`, `:js-enable/disable/toggle`,
-`:tabs-toggle`, `:fullscreen`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
+`:tabs-toggle`, `:pin/unpin/pin-toggle`, `:fullscreen`, `:clear`, `:bind/unbind/bindings`, `:session-save/load`, `:plugin-reload`,
 `:permissions`, `:downloads`, `:history`, `:buffer`, `:split`, `:vsplit`, `:close-pane`,
 `:only-pane`, `:focus-pane`, `:focus-pane-prev`, `:quit`.
 
@@ -111,6 +112,15 @@ the list width (or drag the divider between the list and the page, or use `:set
 tabs.width`); it scrolls when the tabs do not fit. `,t` (`:tabs-toggle`)
 collapses the list to an icon-only rail and back; `[tabs] collapsed` sets the
 startup state.
+
+`gp` (`:pin-toggle`, or `:pin`/`:unpin` to set it explicitly) pins the active
+tab. Pinned tabs are marked and sort to the top of the list, keeping their
+relative order within the pinned group. The normal close `d` refuses to close a
+pinned tab and tells you to unpin first, and `:tab-only` keeps every pinned tab.
+Because pinned tabs stay on top, `gJ`/`gK` move a tab only within its group
+(pinned or unpinned); crossing the boundary is done by pinning or unpinning. The
+pinned state is saved and restored across restart in the autosave and named
+sessions.
 
 Panes show multiple tabs at once. `<C-w>s` (or `:split`) divides the focused
 pane top/bottom; `<C-w>v` (or `:vsplit`) divides it side by side. Each split

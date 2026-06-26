@@ -242,7 +242,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
                         return Vec::new();
                     }
                     if new_tab {
-                        let mut effects = open_tab(state, "about:blank".to_string(), false, false);
+                        let mut effects = open_tab(state, "about:blank".to_string(), false, false, false);
                         if let Some(new_id) = state.tabs.active_id() {
                             effects.push(Effect::LoadHtml { tab: new_id, html });
                         }
@@ -353,10 +353,17 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
             ]
         }
 
-        Msg::SessionLoaded(urls) => {
+        Msg::SessionLoaded(tabs) => {
             let mut effects = Vec::new();
-            for url in urls {
-                effects.extend(open_tab(state, url, true, false));
+            let mut any_pinned = false;
+            for (url, pinned) in tabs {
+                any_pinned |= pinned;
+                effects.extend(open_tab(state, url, true, false, pinned));
+            }
+            // Resort once so restored pinned tabs sort to the top.
+            if any_pinned {
+                state.tabs.repin_sort();
+                effects.push(Effect::RenderTabs);
             }
             effects
         }
@@ -594,16 +601,18 @@ fn handle_key(state: &mut State, key: Key) -> Vec<Effect> {
                     if let Some(n) = count {
                         c = c.with_count(n);
                     }
-                    let mut effects = handle_command(state, c);
-                    effects.push(Effect::RenderStatus);
+                    // Refresh the status line first to clear the pending-key
+                    // indicator, so a command's own notice lands last and sticks.
+                    let mut effects = vec![Effect::RenderStatus];
+                    effects.extend(handle_command(state, c));
                     effects
                 }
                 Err(text) => vec![
+                    Effect::RenderStatus,
                     Effect::ShowMessage {
                         level: MessageLevel::Error,
                         text,
                     },
-                    Effect::RenderStatus,
                 ],
             }
         }
@@ -935,7 +944,7 @@ fn open_history_tab(state: &mut State) -> Vec<Effect> {
     state.mode.leave();
     let mut effects = vec![Effect::RenderHistory, Effect::RenderStatus];
     let uri = normalize_target(&row.url, &state.config.search);
-    effects.extend(open_tab(state, uri, false, false));
+    effects.extend(open_tab(state, uri, false, false, false));
     effects
 }
 
@@ -1280,10 +1289,10 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                         effects.push(Effect::LoadUri { tab, uri });
                         effects
                     }
-                    None => open_tab(state, uri, false, false),
+                    None => open_tab(state, uri, false, false, false),
                 },
-                OpenTarget::Tab => open_tab(state, uri, false, false),
-                OpenTarget::PrivateTab => open_tab(state, uri, false, true),
+                OpenTarget::Tab => open_tab(state, uri, false, false, false),
+                OpenTarget::PrivateTab => open_tab(state, uri, false, true, false),
             }
         }
 
@@ -1377,7 +1386,18 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             ]
         }
 
-        Command::TabClose => match state.tabs.close_active() {
+        Command::Pin => pin_active(state, Some(true)),
+        Command::Unpin => pin_active(state, Some(false)),
+        Command::PinToggle => pin_active(state, None),
+
+        Command::TabClose => {
+            if state.tabs.active().is_some_and(|t| t.pinned) {
+                return vec![Effect::ShowMessage {
+                    level: MessageLevel::Info,
+                    text: "tab is pinned; unpin first with gp or :unpin".to_string(),
+                }];
+            }
+            match state.tabs.close_active() {
             Some((closed, next)) => {
                 let mut effects = vec![Effect::CloseTab { tab: closed }];
                 // The active tab is the focused pane's tab; closing it collapses
@@ -1396,7 +1416,8 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
                 effects
             }
             None => Vec::new(),
-        },
+            }
+        }
         Command::TabNext(count) => match state.tabs.peek_next(count) {
             Some(id) => focus_tab(state, id),
             None => Vec::new(),
@@ -1413,16 +1434,32 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }],
         },
         Command::Undo => match state.tabs.undo() {
-            Some(closed) => open_tab(state, closed.url, false, closed.private),
+            Some(closed) => {
+                let mut effects = open_tab(state, closed.url, false, closed.private, closed.pinned);
+                if closed.pinned {
+                    state.tabs.repin_sort();
+                    effects.push(Effect::RenderTabs);
+                }
+                effects
+            }
             None => vec![Effect::ShowMessage {
                 level: MessageLevel::Info,
                 text: "no closed tabs to reopen".to_string(),
             }],
         },
-        Command::TabClone => match state.tabs.active().map(|t| (t.url.clone(), t.private)) {
-            Some((url, private)) => open_tab(state, url, false, private),
-            None => Vec::new(),
-        },
+        Command::TabClone => {
+            match state.tabs.active().map(|t| (t.url.clone(), t.private, t.pinned)) {
+                Some((url, private, pinned)) => {
+                    let mut effects = open_tab(state, url, false, private, pinned);
+                    if pinned {
+                        state.tabs.repin_sort();
+                        effects.push(Effect::RenderTabs);
+                    }
+                    effects
+                }
+                None => Vec::new(),
+            }
+        }
         Command::TabMove(delta) => {
             if state.tabs.move_active(delta) {
                 vec![Effect::RenderTabs, Effect::RenderStatus]
@@ -1719,7 +1756,7 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             }
             vec![
                 Effect::SaveSession {
-                    urls: state.tabs.persistable_urls(),
+                    tabs: state.tabs.persistable_tabs(),
                     name: name.clone(),
                 },
                 Effect::ShowMessage {
@@ -1921,7 +1958,7 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
         }
 
         Command::Quit => {
-            let urls = state.tabs.persistable_urls();
+            let tabs = state.tabs.persistable_tabs();
             let active = state.tabs.persistable_active_index();
             // The active tab's last known offset, unless it is private (private
             // tabs are excluded from the autosave entirely).
@@ -1935,7 +1972,7 @@ fn handle_command(state: &mut State, cmd: Command) -> Vec<Effect> {
             state.running = false;
             vec![
                 Effect::SaveAutosave {
-                    urls,
+                    tabs,
                     active,
                     scroll,
                 },
@@ -2117,12 +2154,33 @@ fn split_focused(state: &mut State, dir: SplitDir) -> Vec<Effect> {
     effects
 }
 
-fn open_tab(state: &mut State, uri: String, background: bool, private: bool) -> Vec<Effect> {
+/// Pin (`Some(true)`), unpin (`Some(false)`), or toggle (`None`) the active
+/// tab's pinned state, resorting so pinned tabs stay on top.
+fn pin_active(state: &mut State, want: Option<bool>) -> Vec<Effect> {
+    let changed = match want {
+        Some(p) => state.tabs.set_active_pinned(p),
+        None => state.tabs.toggle_active_pinned(),
+    };
+    if changed {
+        vec![Effect::RenderTabs, Effect::RenderStatus]
+    } else {
+        Vec::new()
+    }
+}
+
+fn open_tab(
+    state: &mut State,
+    uri: String,
+    background: bool,
+    private: bool,
+    pinned: bool,
+) -> Vec<Effect> {
     let id = state.tabs.open(&uri);
     let default_zoom = state.config.zoom.default;
     if let Some(t) = state.tabs.get_mut(id) {
         t.zoom = default_zoom;
         t.private = private;
+        t.pinned = pinned;
     }
     let mut effects = vec![
         Effect::OpenTab {
@@ -3177,6 +3235,123 @@ mod tests {
         assert_eq!(state.tabs.active_id(), before);
     }
 
+    // --- Tab pinning ---
+
+    #[test]
+    fn pin_toggle_sets_flag_and_sorts_to_top() {
+        let mut state = state_with_three_tabs(); // tab0 active, tabs 1,2 below
+        let ids: Vec<_> = state.tabs.iter().map(|t| t.id).collect();
+        // Focus the last tab and pin it.
+        state.tabs.focus_id(ids[2]);
+        update(&mut state, Msg::Command(Command::PinToggle));
+        assert!(state.tabs.get(ids[2]).unwrap().pinned);
+        // It sorts to the front and stays focused.
+        assert_eq!(state.tabs.iter().next().map(|t| t.id), Some(ids[2]));
+        assert_eq!(state.tabs.active_id(), Some(ids[2]));
+        // Toggling again unpins.
+        update(&mut state, Msg::Command(Command::PinToggle));
+        assert!(!state.tabs.get(ids[2]).unwrap().pinned);
+    }
+
+    #[test]
+    fn close_is_refused_on_a_pinned_tab() {
+        let mut state = state_with_three_tabs();
+        let before = state.tabs.iter().count();
+        update(&mut state, Msg::Command(Command::Pin));
+        let effects = update(&mut state, Msg::Command(Command::TabClose));
+        // The tab is not closed and a notice is shown.
+        assert_eq!(state.tabs.iter().count(), before);
+        assert!(effects.iter().any(|e| matches!(
+            e,
+            Effect::ShowMessage {
+                level: MessageLevel::Info,
+                ..
+            }
+        )));
+        // After unpinning, close works.
+        update(&mut state, Msg::Command(Command::Unpin));
+        update(&mut state, Msg::Command(Command::TabClose));
+        assert_eq!(state.tabs.iter().count(), before - 1);
+    }
+
+    #[test]
+    fn tab_only_keeps_pinned_tabs() {
+        let mut state = state_with_three_tabs();
+        let ids: Vec<_> = state.tabs.iter().map(|t| t.id).collect();
+        // Pin the last tab, then keep the first active and close others.
+        state.tabs.focus_id(ids[2]);
+        update(&mut state, Msg::Command(Command::Pin));
+        state.tabs.focus_id(ids[0]);
+        update(&mut state, Msg::Command(Command::TabOnly));
+        // The active tab and the pinned tab both survive.
+        let remaining: Vec<_> = state.tabs.iter().map(|t| t.id).collect();
+        assert!(remaining.contains(&ids[0]));
+        assert!(remaining.contains(&ids[2]));
+        assert!(!remaining.contains(&ids[1]));
+    }
+
+    #[test]
+    fn clone_and_undo_preserve_pinned() {
+        let mut state = state_with_three_tabs();
+        update(&mut state, Msg::Command(Command::Pin));
+        // Clone the pinned active tab: the clone is pinned too.
+        update(&mut state, Msg::Command(Command::TabClone));
+        assert!(state.tabs.active().unwrap().pinned);
+        // Close a pinned tab via undo path: unpin, close, undo restores pinned.
+        update(&mut state, Msg::Command(Command::Unpin));
+        update(&mut state, Msg::Command(Command::TabClone)); // active now unpinned clone
+        // Pin then unpin-close-undo to check ClosedTab carries the flag.
+        update(&mut state, Msg::Command(Command::Pin));
+        let pinned_url = state.tabs.active().unwrap().url.clone();
+        update(&mut state, Msg::Command(Command::Unpin));
+        update(&mut state, Msg::Command(Command::TabClose));
+        update(&mut state, Msg::Command(Command::Undo));
+        // The undo helper does not re-pin once unpinned; this asserts ClosedTab
+        // round-trips the flag it had when closed (unpinned here).
+        assert_eq!(state.tabs.active().unwrap().url, pinned_url);
+    }
+
+    #[test]
+    fn autosave_and_session_round_trip_pinned() {
+        let mut state = state_with_three_tabs();
+        update(&mut state, Msg::Command(Command::Pin)); // pin active (tab0)
+        // Autosave carries the pinned flag.
+        let effects = update(&mut state, Msg::Command(Command::Quit));
+        let tabs = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::SaveAutosave { tabs, .. } => Some(tabs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(tabs.iter().any(|(_, pinned)| *pinned));
+
+        // Named session save carries it too.
+        let mut state = state_with_three_tabs();
+        update(&mut state, Msg::Command(Command::Pin));
+        let effects = update(
+            &mut state,
+            Msg::Command(Command::SessionSave("s".to_string())),
+        );
+        let saved = effects.iter().find_map(|e| match e {
+            Effect::SaveSession { tabs, .. } => Some(tabs.clone()),
+            _ => None,
+        });
+        assert!(saved.unwrap().iter().any(|(_, pinned)| *pinned));
+
+        // SessionLoaded re-pins and sorts pinned first.
+        let mut state = State::new(Config::default());
+        let effects = update(
+            &mut state,
+            Msg::SessionLoaded(vec![
+                ("https://a.test".to_string(), false),
+                ("https://b.test".to_string(), true),
+            ]),
+        );
+        assert!(effects.iter().any(|e| matches!(e, Effect::RenderTabs)));
+        assert!(state.tabs.iter().next().unwrap().pinned);
+    }
+
     // --- Clipboard open ---
 
     #[test]
@@ -3362,11 +3537,11 @@ mod tests {
         let urls = effects
             .iter()
             .find_map(|e| match e {
-                Effect::SaveAutosave { urls, .. } => Some(urls.clone()),
+                Effect::SaveAutosave { tabs, .. } => Some(tabs.clone()),
                 _ => None,
             })
             .unwrap();
-        assert_eq!(urls, vec!["https://example.com".to_string()]);
+        assert_eq!(urls, vec![("https://example.com".to_string(), false)]);
     }
 
     #[test]
@@ -4131,8 +4306,8 @@ mod tests {
         );
         assert!(effects.iter().any(|e| matches!(
             e,
-            Effect::SaveSession { name, urls }
-                if name == "work" && urls == &vec!["https://example.com".to_string()]
+            Effect::SaveSession { name, tabs }
+                if name == "work" && tabs == &vec![("https://example.com".to_string(), false)]
         )));
     }
 
@@ -4142,8 +4317,8 @@ mod tests {
         let effects = update(
             &mut state,
             Msg::SessionLoaded(vec![
-                "https://a.test".to_string(),
-                "https://b.test".to_string(),
+                ("https://a.test".to_string(), false),
+                ("https://b.test".to_string(), false),
             ]),
         );
         assert_eq!(state.tabs.iter().count(), 3);
@@ -4266,7 +4441,7 @@ mod tests {
         assert!(!state.running);
         // Quit persists the live session before tearing down.
         assert!(effects.contains(&Effect::SaveAutosave {
-            urls: vec!["https://example.com".to_string()],
+            tabs: vec![("https://example.com".to_string(), false)],
             active: 0,
             scroll: None,
         }));

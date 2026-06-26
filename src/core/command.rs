@@ -210,6 +210,12 @@ pub enum Command {
     FocusPane { next: bool },
     /// Change the current site's JavaScript preference.
     SiteJavascript(JsToggle),
+    /// Pin the active tab.
+    Pin,
+    /// Unpin the active tab.
+    Unpin,
+    /// Toggle the active tab's pinned state.
+    PinToggle,
     /// Toggle the tab sidebar between expanded and collapsed.
     TabsToggle,
     /// Toggle the top-level window between fullscreen and normal.
@@ -380,6 +386,9 @@ impl Command {
             "js-enable" => Command::SiteJavascript(JsToggle::Enable),
             "js-disable" => Command::SiteJavascript(JsToggle::Disable),
             "js-toggle" => Command::SiteJavascript(JsToggle::Toggle),
+            "pin" => Command::Pin,
+            "unpin" => Command::Unpin,
+            "pin-toggle" => Command::PinToggle,
             "tabs-toggle" => Command::TabsToggle,
             "fullscreen" => Command::Fullscreen,
             "clear" => Command::ClearData(match rest.first() {
@@ -600,6 +609,9 @@ pub const COMMAND_CATALOG: &[(&str, &str)] = &[
     ("js-enable", "Enable JavaScript for the current site"),
     ("js-disable", "Disable JavaScript for the current site"),
     ("js-toggle", "Toggle JavaScript for the current site"),
+    ("pin", "Pin the active tab"),
+    ("unpin", "Unpin the active tab"),
+    ("pin-toggle", "Toggle the active tab's pinned state"),
     ("tabs-toggle", "Collapse or expand the tab sidebar"),
     ("fullscreen", "Toggle window fullscreen"),
     (

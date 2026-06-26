@@ -145,15 +145,18 @@ pub enum Effect {
     },
     /// Reload the configuration file from disk.
     ReloadConfig,
-    /// Persist a named session's tab URLs.
-    SaveSession { name: String, urls: Vec<String> },
+    /// Persist a named session's tabs as `(url, pinned)` records.
+    SaveSession {
+        name: String,
+        tabs: Vec<(String, bool)>,
+    },
     /// Load a named session; its URLs return as `Msg::SessionLoaded`.
     LoadSession { name: String },
-    /// Persist the live session (open tab URLs and active index) to the
-    /// autosave file on shutdown. `scroll` is the active tab's last known
-    /// scroll offset, if any.
+    /// Persist the live session to the autosave file on shutdown: the open tabs
+    /// as `(url, pinned)` records, the active index, and the active tab's last
+    /// known scroll offset, if any.
     SaveAutosave {
-        urls: Vec<String>,
+        tabs: Vec<(String, bool)>,
         active: usize,
         scroll: Option<(i64, i64)>,
     },
